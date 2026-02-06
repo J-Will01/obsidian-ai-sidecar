@@ -1,0 +1,24 @@
+{
+  "name": "obsidian-claude-panel",
+  "version": "0.1.0",
+  "description": "VS Code Claude-like sidebar panel for Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "ai",
+    "chat"
+  ],
+  "author": "jwill",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "obsidian": "latest",
+    "tslib": "^2.8.1",
+    "typescript": "^5.8.2"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "id": "claude-panel",
+  "name": "Claude Panel",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "VS Code Claude-like sidebar for Obsidian with proposal + diff workflow.",
+  "author": "jwill",
+  "isDesktopOnly": true
+}
