@@ -14,7 +14,9 @@ import {
 import { ModelResult, ProposedChangeInput } from "../../state/types";
 
 interface ClaudeCodeConfig {
+  launchCommand: string;
   executable: string;
+  configuredWorkingDirectory: string;
   model: string;
   maxTurns: number;
   appendSystemPrompt: string;
@@ -28,9 +30,17 @@ interface CommandExecutionResult {
   output: string;
 }
 
+interface RuntimeInvocation {
+  mode: "direct" | "shell";
+  command: string;
+  args: string[];
+  shellScript?: string;
+}
+
 type GetClaudeCodeConfig = () => ClaudeCodeConfig;
 
 const DIAGNOSTIC_TIMEOUT_MS = 20000;
+const STATUS_DIAGNOSTIC_TIMEOUT_MS = 60000;
 
 function canExecute(path: string): boolean {
   try {
@@ -80,6 +90,15 @@ function splitArgs(input: string): string[] {
     .filter((part) => part.length > 0);
 }
 
+function firstCommandToken(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return "claude";
+  }
+  const [first] = trimmed.split(/\s+/);
+  return first || "claude";
+}
+
 function shellQuote(input: string): string {
   if (!input) {
     return "''";
@@ -92,7 +111,19 @@ function formatCommand(command: string, args: string[]): string {
   return full.map((part) => shellQuote(part)).join(" ");
 }
 
-function makeRuntimeCommands(command: string, configuredExecutable: string): RuntimeSetupCommand[] {
+function formatLaunchCommand(prefix: string, args: string[]): string {
+  const trimmed = prefix.trim();
+  const suffix = args.map((arg) => shellQuote(arg)).join(" ");
+  if (!trimmed) {
+    return suffix;
+  }
+  if (!suffix) {
+    return trimmed;
+  }
+  return `${trimmed} ${suffix}`;
+}
+
+function makeRuntimeCommands(command: string): RuntimeSetupCommand[] {
   const statusArgs = [
     "-p",
     "/status",
@@ -105,9 +136,10 @@ function makeRuntimeCommands(command: string, configuredExecutable: string): Run
     "1"
   ];
 
-  const locateCommand = configuredExecutable.includes("/")
-    ? `ls -l ${shellQuote(configuredExecutable)}`
-    : `which ${shellQuote(configuredExecutable)}`;
+  const locateToken = firstCommandToken(command);
+  const locateCommand = locateToken.includes("/")
+    ? `ls -l ${shellQuote(locateToken)}`
+    : `command -v ${shellQuote(locateToken)}`;
 
   return [
     {
@@ -119,19 +151,19 @@ function makeRuntimeCommands(command: string, configuredExecutable: string): Run
     {
       id: "version",
       label: "Check version",
-      command: formatCommand(command, ["--version"]),
+      command: formatLaunchCommand(command, ["--version"]),
       description: "Verifies the Claude CLI launches from Obsidian."
     },
     {
       id: "status",
       label: "Probe /status",
-      command: formatCommand(command, statusArgs),
+      command: formatLaunchCommand(command, statusArgs),
       description: "Runs a non-editing one-shot request to validate auth/runtime."
     },
     {
       id: "login",
       label: "Open login shell",
-      command: formatCommand(command, []),
+      command: formatLaunchCommand(command, []),
       description: "Starts interactive Claude CLI. If needed, run /login."
     }
   ];
@@ -289,42 +321,51 @@ export class ClaudeCodeClient implements ModelClient {
 
   getRuntimeSetupInfo(): RuntimeSetupInfo {
     const config = this.getConfig();
-    const resolved = resolveExecutable(config.executable, config.cwd);
-    const command = (resolved.command ?? config.executable.trim()) || "claude";
+    const command = this.resolveSetupCommand(config);
 
     return {
       runtimeName: "Claude Code CLI",
       executable: command,
       cwd: config.cwd,
-      commands: makeRuntimeCommands(command, config.executable),
+      commands: makeRuntimeCommands(command),
       supportsTerminalLaunch: process.platform === "darwin"
     };
   }
 
   async runRuntimeDiagnostics(): Promise<RuntimeDiagnosticsResult> {
     const config = this.getConfig();
-    const resolved = resolveExecutable(config.executable, config.cwd);
+    const launchCommand = this.resolveSetupCommand(config);
     const entries: RuntimeDiagnosticEntry[] = [];
-
-    entries.push({
-      id: "resolve",
-      label: "Resolve executable",
-      command: config.executable,
-      success: !!resolved.command,
-      output: resolved.command
-        ? `Resolved: ${resolved.command}`
-        : [
-            `Claude executable not found: ${config.executable}`,
-            resolved.tried.length ? `Tried:\n- ${resolved.tried.join("\n- ")}` : "No candidates were generated."
-          ].join("\n")
-    });
-
-    if (!resolved.command) {
-      return {
-        success: false,
-        summary: "Executable resolution failed. Set an absolute Claude executable path in plugin settings.",
-        entries
-      };
+    const prefix = config.launchCommand.trim();
+    if (prefix) {
+      entries.push({
+        id: "resolve",
+        label: "Resolve launch command",
+        command: prefix,
+        success: true,
+        output: `Using shell launch command: ${prefix}`
+      });
+    } else {
+      const resolved = resolveExecutable(config.executable, config.cwd);
+      entries.push({
+        id: "resolve",
+        label: "Resolve executable",
+        command: config.executable,
+        success: !!resolved.command,
+        output: resolved.command
+          ? `Resolved: ${resolved.command}`
+          : [
+              `Claude executable not found: ${config.executable}`,
+              resolved.tried.length ? `Tried:\n- ${resolved.tried.join("\n- ")}` : "No candidates were generated."
+            ].join("\n")
+      });
+      if (!resolved.command) {
+        return {
+          success: false,
+          summary: "Executable resolution failed. Set a launch command or an absolute Claude executable path in plugin settings.",
+          entries
+        };
+      }
     }
 
     const checks: Array<{ id: string; label: string; args: string[] }> = [
@@ -341,7 +382,20 @@ export class ClaudeCodeClient implements ModelClient {
     ];
 
     for (const check of checks) {
-      const executed = await this.runCommand(resolved.command, check.args, config.cwd, DIAGNOSTIC_TIMEOUT_MS);
+      const invocation = this.buildRuntimeInvocation(config, check.args);
+      if (invocation.resolveError) {
+        entries.push({
+          id: check.id,
+          label: check.label,
+          command: launchCommand,
+          success: false,
+          output: invocation.resolveError
+        });
+        continue;
+      }
+
+      const timeout = check.id === "status" ? STATUS_DIAGNOSTIC_TIMEOUT_MS : DIAGNOSTIC_TIMEOUT_MS;
+      const executed = await this.runCommand(invocation.invocation, timeout, invocation.display);
       entries.push({
         id: check.id,
         label: check.label,
@@ -370,17 +424,17 @@ export class ClaudeCodeClient implements ModelClient {
     }
 
     const config = this.getConfig();
-    const resolved = resolveExecutable(config.executable, config.cwd);
-    if (!resolved.command) {
+    const terminalBase = this.resolveSetupCommand(config);
+    if (!terminalBase) {
       return {
         ok: false,
-        message: "Claude executable could not be resolved. Set it in plugin settings first."
+        message: "Claude launch command is empty. Set it in plugin settings."
       };
     }
 
-    let commandLine = formatCommand(resolved.command, ["--version"]);
+    let commandLine = formatLaunchCommand(terminalBase, ["--version"]);
     if (commandId === "status") {
-      commandLine = formatCommand(resolved.command, [
+      commandLine = formatLaunchCommand(terminalBase, [
         "-p",
         "/status",
         "--output-format",
@@ -392,7 +446,7 @@ export class ClaudeCodeClient implements ModelClient {
         "1"
       ]);
     } else if (commandId === "login") {
-      commandLine = formatCommand(resolved.command, []);
+      commandLine = formatLaunchCommand(terminalBase, []);
     }
 
     const terminalLine = `cd ${shellQuote(config.cwd)}; ${commandLine}`;
@@ -400,7 +454,15 @@ export class ClaudeCodeClient implements ModelClient {
       .replace(/\\/g, "\\\\")
       .replace(/"/g, '\\"')}"`;
 
-    const opened = await this.runCommand("osascript", ["-e", 'tell application "Terminal" to activate', "-e", appleScript], config.cwd, 10000);
+    const opened = await this.runCommand(
+      {
+        mode: "direct",
+        command: "osascript",
+        args: ["-e", 'tell application "Terminal" to activate', "-e", appleScript]
+      },
+      10000,
+      "osascript (open terminal)"
+    );
     if (!opened.success) {
       return {
         ok: false,
@@ -416,16 +478,6 @@ export class ClaudeCodeClient implements ModelClient {
 
   async stream(request: ModelRequest, hooks?: ModelStreamHooks): Promise<ModelResult> {
     const config = this.getConfig();
-    const resolved = resolveExecutable(config.executable, config.cwd);
-    if (!resolved.command) {
-      throw new Error(
-        [
-          `Claude executable not found: ${config.executable}`,
-          resolved.tried.length ? `Tried:\n- ${resolved.tried.join("\n- ")}` : "No executable candidates were generated.",
-          "Set Settings -> Claude Panel -> Claude executable to an absolute path."
-        ].join("\n\n")
-      );
-    }
 
     const args: string[] = [
       "-p",
@@ -452,6 +504,10 @@ export class ClaudeCodeClient implements ModelClient {
     }
 
     args.push(...splitArgs(config.extraArgs));
+    const invocation = this.buildRuntimeInvocation(config, args);
+    if (invocation.resolveError) {
+      throw new Error(invocation.resolveError);
+    }
 
     const streamedAssistantChunks: string[] = [];
     const rawStdoutChunks: string[] = [];
@@ -461,7 +517,7 @@ export class ClaudeCodeClient implements ModelClient {
     let sessionId: string | undefined;
 
     await new Promise<void>((resolvePromise, rejectPromise) => {
-      const child = spawn(resolved.command as string, args, {
+      const child = spawn(invocation.invocation.command, invocation.invocation.args, {
         cwd: config.cwd,
         env: process.env
       });
@@ -519,9 +575,9 @@ export class ClaudeCodeClient implements ModelClient {
           rejectPromise(
             new Error(
               [
-                `Claude executable not found: ${config.executable}`,
-                `Resolved command: ${resolved.command ?? "none"}`,
-                "Set Settings -> Claude Panel -> Claude executable to an absolute path."
+                `Claude launch command failed: ${this.resolveSetupCommand(config)}`,
+                `Invocation: ${invocation.display}`,
+                "Set Settings -> Claude Panel -> Claude launch command or executable."
               ].join("\n")
             )
           );
@@ -560,10 +616,70 @@ export class ClaudeCodeClient implements ModelClient {
     return parsed;
   }
 
-  private async runCommand(command: string, args: string[], cwd: string, timeoutMs: number): Promise<CommandExecutionResult> {
+  private resolveSetupCommand(config: ClaudeCodeConfig): string {
+    const fromLaunch = config.launchCommand.trim();
+    if (fromLaunch) {
+      return fromLaunch;
+    }
+
+    const resolved = resolveExecutable(config.executable, config.cwd);
+    return (resolved.command ?? config.executable.trim()) || "claude";
+  }
+
+  private buildRuntimeInvocation(
+    config: ClaudeCodeConfig,
+    runtimeArgs: string[]
+  ): { invocation: RuntimeInvocation; display: string; resolveError?: string } {
+    const launchCommand = config.launchCommand.trim();
+    if (launchCommand) {
+      const shell = (process.env.SHELL || "/bin/zsh").trim() || "/bin/zsh";
+      const shellScript = `cd ${shellQuote(config.cwd)}; ${formatLaunchCommand(launchCommand, runtimeArgs)}`;
+      return {
+        invocation: {
+          mode: "shell",
+          command: shell,
+          args: ["-ilc", shellScript],
+          shellScript
+        },
+        display: formatLaunchCommand(launchCommand, runtimeArgs)
+      };
+    }
+
+    const resolved = resolveExecutable(config.executable, config.cwd);
+    if (!resolved.command) {
+      return {
+        invocation: {
+          mode: "direct",
+          command: config.executable,
+          args: runtimeArgs
+        },
+        display: formatLaunchCommand(config.executable || "claude", runtimeArgs),
+        resolveError: [
+          `Claude executable not found: ${config.executable}`,
+          resolved.tried.length ? `Tried:\n- ${resolved.tried.join("\n- ")}` : "No executable candidates were generated.",
+          "Set Settings -> Claude Panel -> Claude launch command (for example: claude or ccs work) or an absolute executable path."
+        ].join("\n\n")
+      };
+    }
+
+    return {
+      invocation: {
+        mode: "direct",
+        command: resolved.command,
+        args: runtimeArgs
+      },
+      display: formatCommand(resolved.command, runtimeArgs)
+    };
+  }
+
+  private async runCommand(
+    invocation: RuntimeInvocation,
+    timeoutMs: number,
+    displayCommand: string
+  ): Promise<CommandExecutionResult> {
     return new Promise<CommandExecutionResult>((resolvePromise) => {
-      const child = spawn(command, args, {
-        cwd,
+      const child = spawn(invocation.command, invocation.args, {
+        cwd: this.getConfig().cwd,
         env: process.env
       });
 
@@ -593,7 +709,7 @@ export class ClaudeCodeClient implements ModelClient {
         completed = true;
         clearTimeout(timer);
         resolvePromise({
-          command: formatCommand(command, args),
+          command: displayCommand,
           success: false,
           output: error instanceof Error ? error.message : String(error)
         });
@@ -612,7 +728,7 @@ export class ClaudeCodeClient implements ModelClient {
           ? `Timed out after ${timeoutMs}ms`
           : out || err || (success ? "OK" : `Exited with code ${String(code)}`);
         resolvePromise({
-          command: formatCommand(command, args),
+          command: displayCommand,
           success,
           output
         });

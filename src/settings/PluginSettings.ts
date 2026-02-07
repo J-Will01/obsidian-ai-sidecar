@@ -1,6 +1,8 @@
 export interface ClaudePanelSettings {
   defaultThreadModel: "claude-code";
+  claudeCodeLaunchCommand: string;
   claudeCodeExecutable: string;
+  claudeCodeWorkingDirectory: string;
   claudeCodeModel: string;
   claudeCodeMaxTurns: number;
   claudeCodeAppendSystemPrompt: string;
@@ -9,7 +11,9 @@ export interface ClaudePanelSettings {
 
 export const DEFAULT_SETTINGS: ClaudePanelSettings = {
   defaultThreadModel: "claude-code",
+  claudeCodeLaunchCommand: "claude",
   claudeCodeExecutable: "claude",
+  claudeCodeWorkingDirectory: "",
   claudeCodeModel: "sonnet",
   claudeCodeMaxTurns: 8,
   claudeCodeAppendSystemPrompt:

@@ -1,4 +1,5 @@
 import { Notice, Plugin } from "obsidian";
+import { isAbsolute, resolve } from "path";
 import { AgentOrchestrator } from "./agent/AgentOrchestrator";
 import { PermissionManager } from "./agent/PermissionManager";
 import { ApplyEngine } from "./diff/ApplyEngine";
@@ -34,12 +35,14 @@ export default class ClaudePanelPlugin extends Plugin {
       editorTools,
       models: [
         new ClaudeCodeClient(() => ({
+          launchCommand: this.settings.claudeCodeLaunchCommand,
           executable: this.settings.claudeCodeExecutable,
+          configuredWorkingDirectory: this.settings.claudeCodeWorkingDirectory,
           model: this.settings.claudeCodeModel,
           maxTurns: this.settings.claudeCodeMaxTurns,
           appendSystemPrompt: this.settings.claudeCodeAppendSystemPrompt,
           extraArgs: this.settings.claudeCodeExtraArgs,
-          cwd: vaultBasePath
+          cwd: this.resolveRuntimeCwd(vaultBasePath, this.settings.claudeCodeWorkingDirectory)
         }))
       ],
       applyEngine,
@@ -118,6 +121,12 @@ export default class ClaudePanelPlugin extends Plugin {
     if (!merged.claudeCodeExecutable || typeof merged.claudeCodeExecutable !== "string") {
       merged.claudeCodeExecutable = DEFAULT_SETTINGS.claudeCodeExecutable;
     }
+    if (typeof merged.claudeCodeLaunchCommand !== "string" || !merged.claudeCodeLaunchCommand.trim()) {
+      merged.claudeCodeLaunchCommand = DEFAULT_SETTINGS.claudeCodeLaunchCommand;
+    }
+    if (typeof merged.claudeCodeWorkingDirectory !== "string") {
+      merged.claudeCodeWorkingDirectory = DEFAULT_SETTINGS.claudeCodeWorkingDirectory;
+    }
     if (!merged.claudeCodeModel || typeof merged.claudeCodeModel !== "string") {
       merged.claudeCodeModel = DEFAULT_SETTINGS.claudeCodeModel;
     }
@@ -131,6 +140,14 @@ export default class ClaudePanelPlugin extends Plugin {
       merged.claudeCodeExtraArgs = DEFAULT_SETTINGS.claudeCodeExtraArgs;
     }
     this.settings = merged;
+  }
+
+  private resolveRuntimeCwd(vaultBasePath: string, configuredPath: string): string {
+    const trimmed = configuredPath.trim();
+    if (!trimmed) {
+      return vaultBasePath;
+    }
+    return isAbsolute(trimmed) ? trimmed : resolve(vaultBasePath, trimmed);
   }
 
   async saveSettings(): Promise<void> {

@@ -29,14 +29,46 @@ export class ClaudePanelSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Claude launch command")
+      .setDesc(
+        "Command prefix executed in vault root (or configured start path). Example: claude or ccs work."
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("claude")
+          .setValue(this.plugin.settings.claudeCodeLaunchCommand)
+          .onChange(async (value) => {
+            this.plugin.settings.claudeCodeLaunchCommand = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName("Claude executable")
-      .setDesc("Path or command for Claude Code CLI (for macOS Homebrew, /opt/homebrew/bin/claude is common).")
+      .setDesc(
+        "Fallback executable for direct launch/resolution. Keep as claude unless you need an absolute path."
+      )
       .addText((text) =>
         text
           .setPlaceholder("claude")
           .setValue(this.plugin.settings.claudeCodeExecutable)
           .onChange(async (value) => {
             this.plugin.settings.claudeCodeExecutable = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Runtime start path")
+      .setDesc(
+        "Optional working directory for Claude command. Leave empty to use vault root. Supports absolute or vault-relative path."
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("(vault root)")
+          .setValue(this.plugin.settings.claudeCodeWorkingDirectory)
+          .onChange(async (value) => {
+            this.plugin.settings.claudeCodeWorkingDirectory = value.trim();
             await this.plugin.saveSettings();
           })
       );

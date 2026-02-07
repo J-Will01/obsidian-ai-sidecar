@@ -242,7 +242,7 @@ export class ClaudePanelView extends ItemView {
 
     section.createDiv({
       cls: "claude-muted",
-      text: `Executable: ${this.runtimeSetupInfo.executable}`
+      text: `Launch command: ${this.runtimeSetupInfo.executable}`
     });
     section.createDiv({
       cls: "claude-muted",

@@ -51,9 +51,14 @@ This plugin currently targets the Claude Code runtime (CLI wrapper mode), not di
 1. Install Claude Code CLI and authenticate in your shell.
    - If needed, run `claude` and then run `/login`.
 2. Open `Settings -> Claude Panel`.
-3. Confirm `Claude executable` (usually `claude`).
+3. Set `Claude launch command` (default: `claude`).
+   - You can use profile wrappers such as `ccs work`.
+4. Optional: set `Runtime start path`.
+   - Leave empty to run from vault root.
+   - Supports absolute or vault-relative paths.
+5. Keep `Claude executable` as fallback for direct launch/resolution.
    - If Obsidian shows `Claude executable not found`, set it explicitly to an absolute path (for example `/opt/homebrew/bin/claude`).
-4. Optionally set `Claude model` and `Claude max turns`.
+6. Optionally set `Claude model` and `Claude max turns`.
 
 Panel setup workflow (new):
 - Open `Claude Panel`.
