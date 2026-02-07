@@ -1,7 +1,12 @@
 import { Notice } from "obsidian";
 import { ApplyEngine } from "../diff/ApplyEngine";
 import { DiffEngine } from "../diff/DiffEngine";
-import { ModelClient } from "../model/ModelClient";
+import {
+  ModelClient,
+  RuntimeDiagnosticsResult,
+  RuntimeSetupInfo,
+  RuntimeTerminalLaunchResult
+} from "../model/ModelClient";
 import { ThreadStore, makeEntityId, makeTimestamp } from "../state/ThreadStore";
 import {
   AgentMode,
@@ -80,6 +85,74 @@ export class AgentOrchestrator {
     return this.store.updateThread(threadId, (thread) => {
       thread.settings.model = model;
     });
+  }
+
+  getRuntimeSetupInfo(thread: Thread | null): RuntimeSetupInfo | null {
+    const model = this.resolveModelForThread(thread);
+    return model?.getRuntimeSetupInfo ? model.getRuntimeSetupInfo() : null;
+  }
+
+  async runRuntimeDiagnostics(
+    threadId: string
+  ): Promise<{ thread: Thread; diagnostics: RuntimeDiagnosticsResult }> {
+    const thread = await this.requireThread(threadId);
+    const model = this.resolveModelForThread(thread);
+    if (!model?.runRuntimeDiagnostics) {
+      throw new Error("The active runtime does not provide diagnostics.");
+    }
+
+    const diagnostics = await model.runRuntimeDiagnostics();
+    this.logTool(
+      thread,
+      "runtime_diagnostics",
+      { model: model.id },
+      diagnostics.success,
+      diagnostics.summary,
+      diagnostics.success ? undefined : diagnostics.summary
+    );
+    await this.store.saveThread(thread);
+    return { thread, diagnostics };
+  }
+
+  async launchRuntimeTerminal(
+    threadId: string,
+    commandId: string
+  ): Promise<{ thread: Thread; result: RuntimeTerminalLaunchResult }> {
+    const thread = await this.requireThread(threadId);
+    const model = this.resolveModelForThread(thread);
+    if (!model?.launchRuntimeTerminal) {
+      throw new Error("The active runtime does not support terminal launch.");
+    }
+
+    const result = await model.launchRuntimeTerminal(commandId);
+    this.logTool(
+      thread,
+      "runtime_terminal",
+      { model: model.id, commandId },
+      result.ok,
+      result.message,
+      result.ok ? undefined : result.message
+    );
+    await this.store.saveThread(thread);
+    return { thread, result };
+  }
+
+  async initializeClaudeWorkspace(
+    threadId: string
+  ): Promise<{ thread: Thread; created: string[]; existing: string[] }> {
+    const thread = await this.requireThread(threadId);
+    const { created, existing } = await this.vaultTools.ensureClaudeWorkspaceFiles();
+    this.logTool(
+      thread,
+      "workspace_init",
+      { created, existing },
+      true,
+      created.length
+        ? `Created: ${created.join(", ")}`
+        : "Workspace files already existed (.claude/, CLAUDE.md)."
+    );
+    await this.store.saveThread(thread);
+    return { thread, created, existing };
   }
 
   async resetClaudeSession(threadId: string): Promise<Thread> {
@@ -215,8 +288,7 @@ export class AgentOrchestrator {
     }
 
     const attachments = working.attachments.filter((attachment) => attachment.included);
-    const modelId = working.settings.model || "claude-code";
-    const model = this.modelClients.get(modelId) ?? this.modelClients.get("claude-code");
+    const model = this.resolveModelForThread(working);
     if (!model) {
       throw new Error("No model clients registered.");
     }
@@ -432,6 +504,11 @@ export class AgentOrchestrator {
       throw new Error("Thread not found.");
     }
     return thread;
+  }
+
+  private resolveModelForThread(thread: Thread | null): ModelClient | null {
+    const modelId = thread?.settings.model || "claude-code";
+    return this.modelClients.get(modelId) ?? this.modelClients.get("claude-code") ?? null;
   }
 
   private logTool(

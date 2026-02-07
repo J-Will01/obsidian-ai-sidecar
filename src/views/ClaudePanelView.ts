@@ -1,5 +1,6 @@
 import { ItemView, Modal, Notice, WorkspaceLeaf } from "obsidian";
 import { AgentOrchestrator } from "../agent/AgentOrchestrator";
+import { RuntimeDiagnosticsResult, RuntimeSetupInfo } from "../model/ModelClient";
 import { ThreadIndexEntry, Thread } from "../state/types";
 
 export const CLAUDE_PANEL_VIEW_TYPE = "claude-panel-view";
@@ -59,6 +60,10 @@ export class ClaudePanelView extends ItemView {
   private threadIndex: ThreadIndexEntry[] = [];
   private currentThread: Thread | null = null;
   private streamingAssistant = "";
+  private runtimeSetupInfo: RuntimeSetupInfo | null = null;
+  private runtimeDiagnostics: RuntimeDiagnosticsResult | null = null;
+  private runtimeDiagnosticsAt: string | null = null;
+  private runtimeDiagnosticsRunning = false;
 
   private composerEl: HTMLTextAreaElement | null = null;
 
@@ -157,8 +162,10 @@ export class ClaudePanelView extends ItemView {
   private render(): void {
     this.contentEl.empty();
     this.contentEl.addClass("claude-panel");
+    this.runtimeSetupInfo = this.orchestrator.getRuntimeSetupInfo(this.currentThread);
 
     this.renderHeader();
+    this.renderRuntimeSetup();
     this.renderThreads();
     this.renderTranscript();
     this.renderAttachments();
@@ -221,6 +228,152 @@ export class ClaudePanelView extends ItemView {
         cls: "claude-session-chip",
         text: "new session"
       });
+    }
+  }
+
+  private renderRuntimeSetup(): void {
+    const section = this.contentEl.createDiv({ cls: "claude-runtime-setup" });
+    section.createDiv({ cls: "claude-section-title", text: "Runtime setup" });
+
+    if (!this.runtimeSetupInfo) {
+      section.createDiv({ cls: "claude-muted", text: "Runtime setup unavailable for current model." });
+      return;
+    }
+
+    section.createDiv({
+      cls: "claude-muted",
+      text: `Executable: ${this.runtimeSetupInfo.executable}`
+    });
+    section.createDiv({
+      cls: "claude-muted",
+      text: `Vault cwd: ${this.runtimeSetupInfo.cwd}`
+    });
+
+    const actions = section.createDiv({ cls: "claude-actions" });
+    const runCheckButton = actions.createEl("button", {
+      text: this.runtimeDiagnosticsRunning ? "Running checks..." : "Run Runtime Check"
+    });
+    runCheckButton.disabled = this.runtimeDiagnosticsRunning;
+    runCheckButton.addEventListener("click", async () => {
+      if (!this.currentThread) {
+        return;
+      }
+
+      this.runtimeDiagnosticsRunning = true;
+      this.render();
+      try {
+        const { thread, diagnostics } = await this.orchestrator.runRuntimeDiagnostics(this.currentThread.id);
+        this.currentThread = thread;
+        this.runtimeDiagnostics = diagnostics;
+        this.runtimeDiagnosticsAt = new Date().toISOString();
+        new Notice(diagnostics.summary);
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : String(error));
+      } finally {
+        this.runtimeDiagnosticsRunning = false;
+        this.render();
+      }
+    });
+
+    const openStatusButton = actions.createEl("button", { text: "Terminal /status" });
+    openStatusButton.disabled = !this.runtimeSetupInfo.supportsTerminalLaunch;
+    openStatusButton.addEventListener("click", async () => {
+      if (!this.currentThread) {
+        return;
+      }
+      try {
+        const { thread, result } = await this.orchestrator.launchRuntimeTerminal(this.currentThread.id, "status");
+        this.currentThread = thread;
+        new Notice(result.message);
+        this.render();
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : String(error));
+      }
+    });
+
+    const openLoginButton = actions.createEl("button", { text: "Terminal login" });
+    openLoginButton.disabled = !this.runtimeSetupInfo.supportsTerminalLaunch;
+    openLoginButton.addEventListener("click", async () => {
+      if (!this.currentThread) {
+        return;
+      }
+      try {
+        const { thread, result } = await this.orchestrator.launchRuntimeTerminal(this.currentThread.id, "login");
+        this.currentThread = thread;
+        new Notice(result.message);
+        this.render();
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : String(error));
+      }
+    });
+
+    const bootstrapButton = actions.createEl("button", { text: "Init .claude + CLAUDE.md" });
+    bootstrapButton.addEventListener("click", async () => {
+      if (!this.currentThread) {
+        return;
+      }
+      try {
+        const { thread, created, existing } = await this.orchestrator.initializeClaudeWorkspace(this.currentThread.id);
+        this.currentThread = thread;
+        const summary = created.length
+          ? `Created ${created.join(", ")}`
+          : `Already existed: ${existing.join(", ") || ".claude, CLAUDE.md"}`;
+        new Notice(summary);
+        this.render();
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : String(error));
+      }
+    });
+
+    const docsButton = actions.createEl("button", { text: "Open Claude docs" });
+    docsButton.addEventListener("click", () => {
+      window.open("https://code.claude.com/docs/en/vs-code", "_blank");
+    });
+
+    const commands = section.createDiv({ cls: "claude-runtime-commands" });
+    for (const command of this.runtimeSetupInfo.commands) {
+      const row = commands.createDiv({ cls: "claude-runtime-command" });
+      const body = row.createDiv({ cls: "claude-runtime-command-body" });
+      body.createDiv({ cls: "claude-runtime-command-label", text: command.label });
+      body.createDiv({ cls: "claude-muted", text: command.description });
+      body.createEl("code", { text: command.command });
+
+      const copyButton = row.createEl("button", { text: "Copy" });
+      copyButton.addEventListener("click", async () => {
+        const copied = await this.copyToClipboard(command.command);
+        if (copied) {
+          new Notice(`Copied: ${command.label}`);
+        } else {
+          new Notice("Unable to copy command in this environment.");
+        }
+      });
+    }
+
+    if (this.runtimeDiagnostics) {
+      const diag = section.createDiv({
+        cls: `claude-runtime-diagnostics ${this.runtimeDiagnostics.success ? "is-success" : "is-failed"}`
+      });
+      diag.createDiv({
+        cls: "claude-runtime-diagnostics-summary",
+        text: this.runtimeDiagnostics.summary
+      });
+      if (this.runtimeDiagnosticsAt) {
+        diag.createDiv({
+          cls: "claude-muted",
+          text: `Last run: ${new Date(this.runtimeDiagnosticsAt).toLocaleString()}`
+        });
+      }
+
+      const details = diag.createEl("details");
+      details.createEl("summary", { text: "Diagnostic output" });
+      for (const entry of this.runtimeDiagnostics.entries) {
+        const entryEl = details.createDiv({ cls: "claude-runtime-diagnostic-entry" });
+        entryEl.createDiv({
+          text: `${entry.success ? "OK" : "ERR"} ${entry.label}`
+        });
+        entryEl.createEl("code", { text: entry.command });
+        entryEl.createEl("pre", { text: entry.output });
+      }
     }
   }
 
@@ -517,5 +670,27 @@ export class ClaudePanelView extends ItemView {
       const modal = new BatchApplyModal(this.leaf, paths, resolve);
       modal.open();
     });
+  }
+
+  private async copyToClipboard(value: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        return ok;
+      } catch {
+        return false;
+      }
+    }
   }
 }

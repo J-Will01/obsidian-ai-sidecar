@@ -1,6 +1,6 @@
 .claude-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(220px, 1fr) auto auto auto;
+  grid-template-rows: auto auto auto minmax(220px, 1fr) auto auto auto;
   gap: 10px;
   height: 100%;
   padding: 10px;
@@ -11,6 +11,7 @@
 }
 
 .claude-header,
+.claude-runtime-setup,
 .claude-composer,
 .claude-attachments,
 .claude-proposals,
@@ -105,7 +106,8 @@
 .claude-attachments,
 .claude-proposals,
 .claude-tools,
-.claude-composer {
+.claude-composer,
+.claude-runtime-setup {
   padding: 10px;
 }
 
@@ -238,6 +240,96 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.claude-runtime-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.claude-runtime-commands {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.claude-runtime-command {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--background-primary);
+}
+
+.claude-runtime-command-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.claude-runtime-command-label {
+  font-size: 12px;
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+.claude-runtime-command code,
+.claude-runtime-diagnostic-entry code {
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: color-mix(in srgb, var(--background-secondary) 82%, transparent);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.claude-runtime-diagnostics {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--background-primary);
+}
+
+.claude-runtime-diagnostics.is-success {
+  border-color: rgba(46, 160, 67, 0.45);
+}
+
+.claude-runtime-diagnostics.is-failed {
+  border-color: rgba(248, 81, 73, 0.45);
+}
+
+.claude-runtime-diagnostics-summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-normal);
+  margin-bottom: 4px;
+}
+
+.claude-runtime-diagnostic-entry {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.claude-runtime-diagnostic-entry pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: color-mix(in srgb, var(--background-secondary) 80%, transparent);
 }
 
 .claude-composer textarea {

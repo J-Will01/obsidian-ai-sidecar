@@ -55,6 +55,12 @@ This plugin currently targets the Claude Code runtime (CLI wrapper mode), not di
    - If Obsidian shows `Claude executable not found`, set it explicitly to an absolute path (for example `/opt/homebrew/bin/claude`).
 4. Optionally set `Claude model` and `Claude max turns`.
 
+Panel setup workflow (new):
+- Open `Claude Panel`.
+- Use `Run Runtime Check` to verify executable resolution, CLI version, and a `/status` probe.
+- Use `Terminal /status` or `Terminal login` for one-click terminal launch (macOS).
+- Use `Init .claude + CLAUDE.md` to create vault-local Claude runtime bootstrap files.
+
 Session behavior:
 - Each Claude Panel thread stores a Claude Code `session_id`.
 - New message in same thread uses `--resume <session_id>`.

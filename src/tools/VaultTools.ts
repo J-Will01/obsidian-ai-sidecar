@@ -5,6 +5,11 @@ export interface SearchResult {
   snippet: string;
 }
 
+export interface ClaudeWorkspaceBootstrapResult {
+  created: string[];
+  existing: string[];
+}
+
 export class VaultTools {
   private app: App;
 
@@ -86,6 +91,43 @@ export class VaultTools {
     const prefix = normalizePath(path).replace(/\/$/, "");
     const files = this.app.vault.getMarkdownFiles();
     return files.filter((file) => file.path.startsWith(prefix)).map((file) => file.path);
+  }
+
+  async ensureClaudeWorkspaceFiles(): Promise<ClaudeWorkspaceBootstrapResult> {
+    const created: string[] = [];
+    const existing: string[] = [];
+    const runtimeDir = normalizePath(".claude");
+    const memoryPath = normalizePath("CLAUDE.md");
+
+    if (!(await this.app.vault.adapter.exists(runtimeDir))) {
+      await this.app.vault.createFolder(runtimeDir);
+      created.push(runtimeDir);
+    } else {
+      existing.push(runtimeDir);
+    }
+
+    const memoryFile = this.app.vault.getAbstractFileByPath(memoryPath);
+    if (!(memoryFile instanceof TFile)) {
+      const template = [
+        "# CLAUDE.md",
+        "",
+        "Project memory for Claude Code runtime in this Obsidian vault.",
+        "",
+        "## Goals",
+        "- Keep proposed edits reviewable in Claude Panel before applying.",
+        "- Prefer incremental changes with clear rationale.",
+        "",
+        "## Notes",
+        "- Use Plan mode for read-only exploration.",
+        "- Use Normal mode for approval-based writes."
+      ].join("\n");
+      await this.app.vault.create(memoryPath, template);
+      created.push(memoryPath);
+    } else {
+      existing.push(memoryPath);
+    }
+
+    return { created, existing };
   }
 
   private async ensureParentFolder(path: string): Promise<void> {

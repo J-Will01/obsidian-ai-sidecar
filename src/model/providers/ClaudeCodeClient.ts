@@ -1,7 +1,16 @@
 import { spawn } from "child_process";
 import { accessSync, constants } from "fs";
 import { isAbsolute, join, resolve } from "path";
-import { ModelClient, ModelRequest, ModelStreamHooks } from "../ModelClient";
+import {
+  ModelClient,
+  ModelRequest,
+  ModelStreamHooks,
+  RuntimeDiagnosticEntry,
+  RuntimeDiagnosticsResult,
+  RuntimeSetupCommand,
+  RuntimeSetupInfo,
+  RuntimeTerminalLaunchResult
+} from "../ModelClient";
 import { ModelResult, ProposedChangeInput } from "../../state/types";
 
 interface ClaudeCodeConfig {
@@ -13,7 +22,15 @@ interface ClaudeCodeConfig {
   cwd: string;
 }
 
+interface CommandExecutionResult {
+  command: string;
+  success: boolean;
+  output: string;
+}
+
 type GetClaudeCodeConfig = () => ClaudeCodeConfig;
+
+const DIAGNOSTIC_TIMEOUT_MS = 20000;
 
 function canExecute(path: string): boolean {
   try {
@@ -61,6 +78,63 @@ function splitArgs(input: string): string[] {
     .split(/\s+/)
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+}
+
+function shellQuote(input: string): string {
+  if (!input) {
+    return "''";
+  }
+  return `'${input.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function formatCommand(command: string, args: string[]): string {
+  const full = [command, ...args];
+  return full.map((part) => shellQuote(part)).join(" ");
+}
+
+function makeRuntimeCommands(command: string, configuredExecutable: string): RuntimeSetupCommand[] {
+  const statusArgs = [
+    "-p",
+    "/status",
+    "--output-format",
+    "text",
+    "--verbose",
+    "--permission-mode",
+    "plan",
+    "--max-turns",
+    "1"
+  ];
+
+  const locateCommand = configuredExecutable.includes("/")
+    ? `ls -l ${shellQuote(configuredExecutable)}`
+    : `which ${shellQuote(configuredExecutable)}`;
+
+  return [
+    {
+      id: "where",
+      label: "Locate Claude",
+      command: locateCommand,
+      description: "Confirms where the Claude executable resolves in your shell."
+    },
+    {
+      id: "version",
+      label: "Check version",
+      command: formatCommand(command, ["--version"]),
+      description: "Verifies the Claude CLI launches from Obsidian."
+    },
+    {
+      id: "status",
+      label: "Probe /status",
+      command: formatCommand(command, statusArgs),
+      description: "Runs a non-editing one-shot request to validate auth/runtime."
+    },
+    {
+      id: "login",
+      label: "Open login shell",
+      command: formatCommand(command, []),
+      description: "Starts interactive Claude CLI. If needed, run /login."
+    }
+  ];
 }
 
 function extractTextFromAssistantPayload(payload: Record<string, unknown>): string {
@@ -213,6 +287,133 @@ export class ClaudeCodeClient implements ModelClient {
     this.getConfig = getConfig;
   }
 
+  getRuntimeSetupInfo(): RuntimeSetupInfo {
+    const config = this.getConfig();
+    const resolved = resolveExecutable(config.executable, config.cwd);
+    const command = (resolved.command ?? config.executable.trim()) || "claude";
+
+    return {
+      runtimeName: "Claude Code CLI",
+      executable: command,
+      cwd: config.cwd,
+      commands: makeRuntimeCommands(command, config.executable),
+      supportsTerminalLaunch: process.platform === "darwin"
+    };
+  }
+
+  async runRuntimeDiagnostics(): Promise<RuntimeDiagnosticsResult> {
+    const config = this.getConfig();
+    const resolved = resolveExecutable(config.executable, config.cwd);
+    const entries: RuntimeDiagnosticEntry[] = [];
+
+    entries.push({
+      id: "resolve",
+      label: "Resolve executable",
+      command: config.executable,
+      success: !!resolved.command,
+      output: resolved.command
+        ? `Resolved: ${resolved.command}`
+        : [
+            `Claude executable not found: ${config.executable}`,
+            resolved.tried.length ? `Tried:\n- ${resolved.tried.join("\n- ")}` : "No candidates were generated."
+          ].join("\n")
+    });
+
+    if (!resolved.command) {
+      return {
+        success: false,
+        summary: "Executable resolution failed. Set an absolute Claude executable path in plugin settings.",
+        entries
+      };
+    }
+
+    const checks: Array<{ id: string; label: string; args: string[] }> = [
+      {
+        id: "version",
+        label: "Check version",
+        args: ["--version"]
+      },
+      {
+        id: "status",
+        label: "Probe /status",
+        args: ["-p", "/status", "--output-format", "text", "--verbose", "--permission-mode", "plan", "--max-turns", "1"]
+      }
+    ];
+
+    for (const check of checks) {
+      const executed = await this.runCommand(resolved.command, check.args, config.cwd, DIAGNOSTIC_TIMEOUT_MS);
+      entries.push({
+        id: check.id,
+        label: check.label,
+        command: executed.command,
+        success: executed.success,
+        output: executed.output
+      });
+    }
+
+    const success = entries.every((entry) => entry.success);
+    return {
+      success,
+      summary: success
+        ? "Claude runtime looks healthy."
+        : "One or more runtime checks failed. Use output below to fix executable/auth issues.",
+      entries
+    };
+  }
+
+  async launchRuntimeTerminal(commandId: string): Promise<RuntimeTerminalLaunchResult> {
+    if (process.platform !== "darwin") {
+      return {
+        ok: false,
+        message: "Terminal launch shortcut is currently implemented for macOS only."
+      };
+    }
+
+    const config = this.getConfig();
+    const resolved = resolveExecutable(config.executable, config.cwd);
+    if (!resolved.command) {
+      return {
+        ok: false,
+        message: "Claude executable could not be resolved. Set it in plugin settings first."
+      };
+    }
+
+    let commandLine = formatCommand(resolved.command, ["--version"]);
+    if (commandId === "status") {
+      commandLine = formatCommand(resolved.command, [
+        "-p",
+        "/status",
+        "--output-format",
+        "text",
+        "--verbose",
+        "--permission-mode",
+        "plan",
+        "--max-turns",
+        "1"
+      ]);
+    } else if (commandId === "login") {
+      commandLine = formatCommand(resolved.command, []);
+    }
+
+    const terminalLine = `cd ${shellQuote(config.cwd)}; ${commandLine}`;
+    const appleScript = `tell application "Terminal" to do script "${terminalLine
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')}"`;
+
+    const opened = await this.runCommand("osascript", ["-e", 'tell application "Terminal" to activate', "-e", appleScript], config.cwd, 10000);
+    if (!opened.success) {
+      return {
+        ok: false,
+        message: opened.output || "Failed to open Terminal."
+      };
+    }
+
+    return {
+      ok: true,
+      message: `Opened Terminal with: ${commandLine}`
+    };
+  }
+
   async stream(request: ModelRequest, hooks?: ModelStreamHooks): Promise<ModelResult> {
     const config = this.getConfig();
     const resolved = resolveExecutable(config.executable, config.cwd);
@@ -259,7 +460,7 @@ export class ClaudeCodeClient implements ModelClient {
     let resultErrorText = "";
     let sessionId: string | undefined;
 
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolvePromise, rejectPromise) => {
       const child = spawn(resolved.command as string, args, {
         cwd: config.cwd,
         env: process.env
@@ -315,7 +516,7 @@ export class ClaudeCodeClient implements ModelClient {
 
       child.on("error", (error) => {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          reject(
+          rejectPromise(
             new Error(
               [
                 `Claude executable not found: ${config.executable}`,
@@ -326,12 +527,12 @@ export class ClaudeCodeClient implements ModelClient {
           );
           return;
         }
-        reject(error);
+        rejectPromise(error);
       });
 
       child.on("close", (code) => {
         if (code !== 0) {
-          reject(new Error(rawStderrChunks.join("").trim() || `Claude CLI exited with code ${code}`));
+          rejectPromise(new Error(rawStderrChunks.join("").trim() || `Claude CLI exited with code ${code}`));
           return;
         }
 
@@ -339,7 +540,7 @@ export class ClaudeCodeClient implements ModelClient {
           rawStdoutChunks.push(lineBuffer);
         }
 
-        resolve();
+        resolvePromise();
       });
     });
 
@@ -357,5 +558,65 @@ export class ClaudeCodeClient implements ModelClient {
     const parsed = parseModelResult(rawStdoutChunks.join("\n").trim());
     parsed.claudeCodeSessionId = sessionId;
     return parsed;
+  }
+
+  private async runCommand(command: string, args: string[], cwd: string, timeoutMs: number): Promise<CommandExecutionResult> {
+    return new Promise<CommandExecutionResult>((resolvePromise) => {
+      const child = spawn(command, args, {
+        cwd,
+        env: process.env
+      });
+
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      let completed = false;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, timeoutMs);
+
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+
+      child.stdout.on("data", (chunk: string) => {
+        stdout.push(chunk);
+      });
+      child.stderr.on("data", (chunk: string) => {
+        stderr.push(chunk);
+      });
+
+      child.on("error", (error) => {
+        if (completed) {
+          return;
+        }
+        completed = true;
+        clearTimeout(timer);
+        resolvePromise({
+          command: formatCommand(command, args),
+          success: false,
+          output: error instanceof Error ? error.message : String(error)
+        });
+      });
+
+      child.on("close", (code) => {
+        if (completed) {
+          return;
+        }
+        completed = true;
+        clearTimeout(timer);
+        const out = stdout.join("").trim();
+        const err = stderr.join("").trim();
+        const success = code === 0 && !timedOut;
+        const output = timedOut
+          ? `Timed out after ${timeoutMs}ms`
+          : out || err || (success ? "OK" : `Exited with code ${String(code)}`);
+        resolvePromise({
+          command: formatCommand(command, args),
+          success,
+          output
+        });
+      });
+    });
   }
 }

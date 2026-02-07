@@ -257,6 +257,59 @@ var AgentOrchestrator = class {
       thread.settings.model = model;
     });
   }
+  getRuntimeSetupInfo(thread) {
+    const model = this.resolveModelForThread(thread);
+    return (model == null ? void 0 : model.getRuntimeSetupInfo) ? model.getRuntimeSetupInfo() : null;
+  }
+  async runRuntimeDiagnostics(threadId) {
+    const thread = await this.requireThread(threadId);
+    const model = this.resolveModelForThread(thread);
+    if (!(model == null ? void 0 : model.runRuntimeDiagnostics)) {
+      throw new Error("The active runtime does not provide diagnostics.");
+    }
+    const diagnostics = await model.runRuntimeDiagnostics();
+    this.logTool(
+      thread,
+      "runtime_diagnostics",
+      { model: model.id },
+      diagnostics.success,
+      diagnostics.summary,
+      diagnostics.success ? void 0 : diagnostics.summary
+    );
+    await this.store.saveThread(thread);
+    return { thread, diagnostics };
+  }
+  async launchRuntimeTerminal(threadId, commandId) {
+    const thread = await this.requireThread(threadId);
+    const model = this.resolveModelForThread(thread);
+    if (!(model == null ? void 0 : model.launchRuntimeTerminal)) {
+      throw new Error("The active runtime does not support terminal launch.");
+    }
+    const result = await model.launchRuntimeTerminal(commandId);
+    this.logTool(
+      thread,
+      "runtime_terminal",
+      { model: model.id, commandId },
+      result.ok,
+      result.message,
+      result.ok ? void 0 : result.message
+    );
+    await this.store.saveThread(thread);
+    return { thread, result };
+  }
+  async initializeClaudeWorkspace(threadId) {
+    const thread = await this.requireThread(threadId);
+    const { created, existing } = await this.vaultTools.ensureClaudeWorkspaceFiles();
+    this.logTool(
+      thread,
+      "workspace_init",
+      { created, existing },
+      true,
+      created.length ? `Created: ${created.join(", ")}` : "Workspace files already existed (.claude/, CLAUDE.md)."
+    );
+    await this.store.saveThread(thread);
+    return { thread, created, existing };
+  }
   async resetClaudeSession(threadId) {
     return this.store.updateThread(threadId, (thread) => {
       const previous = thread.claudeCodeSessionId;
@@ -345,7 +398,6 @@ var AgentOrchestrator = class {
     return thread;
   }
   async sendMessage(threadId, userMessage, options) {
-    var _a;
     let working = await this.store.getThread(threadId) || await this.createThread(userMessage.slice(0, 40) || "New thread");
     const user = {
       id: makeEntityId("msg"),
@@ -372,8 +424,7 @@ ${result2.snippet}`).join("\n\n"),
       this.logTool(working, "search_notes", { query: searchQuery, limit: 8 }, true, `Found ${results.length} results`);
     }
     const attachments = working.attachments.filter((attachment) => attachment.included);
-    const modelId = working.settings.model || "claude-code";
-    const model = (_a = this.modelClients.get(modelId)) != null ? _a : this.modelClients.get("claude-code");
+    const model = this.resolveModelForThread(working);
     if (!model) {
       throw new Error("No model clients registered.");
     }
@@ -560,6 +611,11 @@ ${result2.snippet}`).join("\n\n"),
     }
     return thread;
   }
+  resolveModelForThread(thread) {
+    var _a, _b;
+    const modelId = (thread == null ? void 0 : thread.settings.model) || "claude-code";
+    return (_b = (_a = this.modelClients.get(modelId)) != null ? _a : this.modelClients.get("claude-code")) != null ? _b : null;
+  }
   logTool(thread, name, args, success, result, error) {
     const entry = {
       id: makeEntityId("tool"),
@@ -679,6 +735,7 @@ var ApplyEngine = class {
 var import_child_process = require("child_process");
 var import_fs = require("fs");
 var import_path = require("path");
+var DIAGNOSTIC_TIMEOUT_MS = 2e4;
 function canExecute(path) {
   try {
     (0, import_fs.accessSync)(path, import_fs.constants.X_OK);
@@ -711,6 +768,56 @@ function resolveExecutable(executable, cwd) {
 }
 function splitArgs(input) {
   return input.split(/\s+/).map((part) => part.trim()).filter((part) => part.length > 0);
+}
+function shellQuote(input) {
+  if (!input) {
+    return "''";
+  }
+  return `'${input.replace(/'/g, `'"'"'`)}'`;
+}
+function formatCommand(command, args) {
+  const full = [command, ...args];
+  return full.map((part) => shellQuote(part)).join(" ");
+}
+function makeRuntimeCommands(command, configuredExecutable) {
+  const statusArgs = [
+    "-p",
+    "/status",
+    "--output-format",
+    "text",
+    "--verbose",
+    "--permission-mode",
+    "plan",
+    "--max-turns",
+    "1"
+  ];
+  const locateCommand = configuredExecutable.includes("/") ? `ls -l ${shellQuote(configuredExecutable)}` : `which ${shellQuote(configuredExecutable)}`;
+  return [
+    {
+      id: "where",
+      label: "Locate Claude",
+      command: locateCommand,
+      description: "Confirms where the Claude executable resolves in your shell."
+    },
+    {
+      id: "version",
+      label: "Check version",
+      command: formatCommand(command, ["--version"]),
+      description: "Verifies the Claude CLI launches from Obsidian."
+    },
+    {
+      id: "status",
+      label: "Probe /status",
+      command: formatCommand(command, statusArgs),
+      description: "Runs a non-editing one-shot request to validate auth/runtime."
+    },
+    {
+      id: "login",
+      label: "Open login shell",
+      command: formatCommand(command, []),
+      description: "Starts interactive Claude CLI. If needed, run /login."
+    }
+  ];
 }
 function extractTextFromAssistantPayload(payload) {
   const message = payload.message;
@@ -823,6 +930,115 @@ var ClaudeCodeClient = class {
     this.id = "claude-code";
     this.getConfig = getConfig;
   }
+  getRuntimeSetupInfo() {
+    var _a;
+    const config = this.getConfig();
+    const resolved = resolveExecutable(config.executable, config.cwd);
+    const command = ((_a = resolved.command) != null ? _a : config.executable.trim()) || "claude";
+    return {
+      runtimeName: "Claude Code CLI",
+      executable: command,
+      cwd: config.cwd,
+      commands: makeRuntimeCommands(command, config.executable),
+      supportsTerminalLaunch: process.platform === "darwin"
+    };
+  }
+  async runRuntimeDiagnostics() {
+    const config = this.getConfig();
+    const resolved = resolveExecutable(config.executable, config.cwd);
+    const entries = [];
+    entries.push({
+      id: "resolve",
+      label: "Resolve executable",
+      command: config.executable,
+      success: !!resolved.command,
+      output: resolved.command ? `Resolved: ${resolved.command}` : [
+        `Claude executable not found: ${config.executable}`,
+        resolved.tried.length ? `Tried:
+- ${resolved.tried.join("\n- ")}` : "No candidates were generated."
+      ].join("\n")
+    });
+    if (!resolved.command) {
+      return {
+        success: false,
+        summary: "Executable resolution failed. Set an absolute Claude executable path in plugin settings.",
+        entries
+      };
+    }
+    const checks = [
+      {
+        id: "version",
+        label: "Check version",
+        args: ["--version"]
+      },
+      {
+        id: "status",
+        label: "Probe /status",
+        args: ["-p", "/status", "--output-format", "text", "--verbose", "--permission-mode", "plan", "--max-turns", "1"]
+      }
+    ];
+    for (const check of checks) {
+      const executed = await this.runCommand(resolved.command, check.args, config.cwd, DIAGNOSTIC_TIMEOUT_MS);
+      entries.push({
+        id: check.id,
+        label: check.label,
+        command: executed.command,
+        success: executed.success,
+        output: executed.output
+      });
+    }
+    const success = entries.every((entry) => entry.success);
+    return {
+      success,
+      summary: success ? "Claude runtime looks healthy." : "One or more runtime checks failed. Use output below to fix executable/auth issues.",
+      entries
+    };
+  }
+  async launchRuntimeTerminal(commandId) {
+    if (process.platform !== "darwin") {
+      return {
+        ok: false,
+        message: "Terminal launch shortcut is currently implemented for macOS only."
+      };
+    }
+    const config = this.getConfig();
+    const resolved = resolveExecutable(config.executable, config.cwd);
+    if (!resolved.command) {
+      return {
+        ok: false,
+        message: "Claude executable could not be resolved. Set it in plugin settings first."
+      };
+    }
+    let commandLine = formatCommand(resolved.command, ["--version"]);
+    if (commandId === "status") {
+      commandLine = formatCommand(resolved.command, [
+        "-p",
+        "/status",
+        "--output-format",
+        "text",
+        "--verbose",
+        "--permission-mode",
+        "plan",
+        "--max-turns",
+        "1"
+      ]);
+    } else if (commandId === "login") {
+      commandLine = formatCommand(resolved.command, []);
+    }
+    const terminalLine = `cd ${shellQuote(config.cwd)}; ${commandLine}`;
+    const appleScript = `tell application "Terminal" to do script "${terminalLine.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    const opened = await this.runCommand("osascript", ["-e", 'tell application "Terminal" to activate', "-e", appleScript], config.cwd, 1e4);
+    if (!opened.success) {
+      return {
+        ok: false,
+        message: opened.output || "Failed to open Terminal."
+      };
+    }
+    return {
+      ok: true,
+      message: `Opened Terminal with: ${commandLine}`
+    };
+  }
   async stream(request, hooks) {
     const config = this.getConfig();
     const resolved = resolveExecutable(config.executable, config.cwd);
@@ -863,7 +1079,7 @@ var ClaudeCodeClient = class {
     let finalResultText = "";
     let resultErrorText = "";
     let sessionId;
-    await new Promise((resolve2, reject) => {
+    await new Promise((resolvePromise, rejectPromise) => {
       const child = (0, import_child_process.spawn)(resolved.command, args, {
         cwd: config.cwd,
         env: process.env
@@ -912,7 +1128,7 @@ var ClaudeCodeClient = class {
       child.on("error", (error) => {
         var _a;
         if (error.code === "ENOENT") {
-          reject(
+          rejectPromise(
             new Error(
               [
                 `Claude executable not found: ${config.executable}`,
@@ -923,17 +1139,17 @@ var ClaudeCodeClient = class {
           );
           return;
         }
-        reject(error);
+        rejectPromise(error);
       });
       child.on("close", (code) => {
         if (code !== 0) {
-          reject(new Error(rawStderrChunks.join("").trim() || `Claude CLI exited with code ${code}`));
+          rejectPromise(new Error(rawStderrChunks.join("").trim() || `Claude CLI exited with code ${code}`));
           return;
         }
         if (lineBuffer.trim()) {
           rawStdoutChunks.push(lineBuffer);
         }
-        resolve2();
+        resolvePromise();
       });
     });
     const candidate = (finalResultText || streamedAssistantChunks.join("\n\n")).trim();
@@ -948,6 +1164,58 @@ var ClaudeCodeClient = class {
     const parsed = parseModelResult(rawStdoutChunks.join("\n").trim());
     parsed.claudeCodeSessionId = sessionId;
     return parsed;
+  }
+  async runCommand(command, args, cwd, timeoutMs) {
+    return new Promise((resolvePromise) => {
+      const child = (0, import_child_process.spawn)(command, args, {
+        cwd,
+        env: process.env
+      });
+      const stdout = [];
+      const stderr = [];
+      let completed = false;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, timeoutMs);
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout.push(chunk);
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr.push(chunk);
+      });
+      child.on("error", (error) => {
+        if (completed) {
+          return;
+        }
+        completed = true;
+        clearTimeout(timer);
+        resolvePromise({
+          command: formatCommand(command, args),
+          success: false,
+          output: error instanceof Error ? error.message : String(error)
+        });
+      });
+      child.on("close", (code) => {
+        if (completed) {
+          return;
+        }
+        completed = true;
+        clearTimeout(timer);
+        const out = stdout.join("").trim();
+        const err = stderr.join("").trim();
+        const success = code === 0 && !timedOut;
+        const output = timedOut ? `Timed out after ${timeoutMs}ms` : out || err || (success ? "OK" : `Exited with code ${String(code)}`);
+        resolvePromise({
+          command: formatCommand(command, args),
+          success,
+          output
+        });
+      });
+    });
   }
 };
 
@@ -1122,6 +1390,39 @@ var VaultTools = class {
     const files = this.app.vault.getMarkdownFiles();
     return files.filter((file) => file.path.startsWith(prefix)).map((file) => file.path);
   }
+  async ensureClaudeWorkspaceFiles() {
+    const created = [];
+    const existing = [];
+    const runtimeDir = (0, import_obsidian6.normalizePath)(".claude");
+    const memoryPath = (0, import_obsidian6.normalizePath)("CLAUDE.md");
+    if (!await this.app.vault.adapter.exists(runtimeDir)) {
+      await this.app.vault.createFolder(runtimeDir);
+      created.push(runtimeDir);
+    } else {
+      existing.push(runtimeDir);
+    }
+    const memoryFile = this.app.vault.getAbstractFileByPath(memoryPath);
+    if (!(memoryFile instanceof import_obsidian6.TFile)) {
+      const template = [
+        "# CLAUDE.md",
+        "",
+        "Project memory for Claude Code runtime in this Obsidian vault.",
+        "",
+        "## Goals",
+        "- Keep proposed edits reviewable in Claude Panel before applying.",
+        "- Prefer incremental changes with clear rationale.",
+        "",
+        "## Notes",
+        "- Use Plan mode for read-only exploration.",
+        "- Use Normal mode for approval-based writes."
+      ].join("\n");
+      await this.app.vault.create(memoryPath, template);
+      created.push(memoryPath);
+    } else {
+      existing.push(memoryPath);
+    }
+    return { created, existing };
+  }
   async ensureParentFolder(path) {
     const parts = path.split("/");
     parts.pop();
@@ -1192,6 +1493,10 @@ var ClaudePanelView = class extends import_obsidian7.ItemView {
     this.threadIndex = [];
     this.currentThread = null;
     this.streamingAssistant = "";
+    this.runtimeSetupInfo = null;
+    this.runtimeDiagnostics = null;
+    this.runtimeDiagnosticsAt = null;
+    this.runtimeDiagnosticsRunning = false;
     this.composerEl = null;
     this.orchestrator = orchestrator;
   }
@@ -1270,7 +1575,9 @@ var ClaudePanelView = class extends import_obsidian7.ItemView {
   render() {
     this.contentEl.empty();
     this.contentEl.addClass("claude-panel");
+    this.runtimeSetupInfo = this.orchestrator.getRuntimeSetupInfo(this.currentThread);
     this.renderHeader();
+    this.renderRuntimeSetup();
     this.renderThreads();
     this.renderTranscript();
     this.renderAttachments();
@@ -1328,6 +1635,137 @@ var ClaudePanelView = class extends import_obsidian7.ItemView {
         cls: "claude-session-chip",
         text: "new session"
       });
+    }
+  }
+  renderRuntimeSetup() {
+    const section = this.contentEl.createDiv({ cls: "claude-runtime-setup" });
+    section.createDiv({ cls: "claude-section-title", text: "Runtime setup" });
+    if (!this.runtimeSetupInfo) {
+      section.createDiv({ cls: "claude-muted", text: "Runtime setup unavailable for current model." });
+      return;
+    }
+    section.createDiv({
+      cls: "claude-muted",
+      text: `Executable: ${this.runtimeSetupInfo.executable}`
+    });
+    section.createDiv({
+      cls: "claude-muted",
+      text: `Vault cwd: ${this.runtimeSetupInfo.cwd}`
+    });
+    const actions = section.createDiv({ cls: "claude-actions" });
+    const runCheckButton = actions.createEl("button", {
+      text: this.runtimeDiagnosticsRunning ? "Running checks..." : "Run Runtime Check"
+    });
+    runCheckButton.disabled = this.runtimeDiagnosticsRunning;
+    runCheckButton.addEventListener("click", async () => {
+      if (!this.currentThread) {
+        return;
+      }
+      this.runtimeDiagnosticsRunning = true;
+      this.render();
+      try {
+        const { thread, diagnostics } = await this.orchestrator.runRuntimeDiagnostics(this.currentThread.id);
+        this.currentThread = thread;
+        this.runtimeDiagnostics = diagnostics;
+        this.runtimeDiagnosticsAt = (/* @__PURE__ */ new Date()).toISOString();
+        new import_obsidian7.Notice(diagnostics.summary);
+      } catch (error) {
+        new import_obsidian7.Notice(error instanceof Error ? error.message : String(error));
+      } finally {
+        this.runtimeDiagnosticsRunning = false;
+        this.render();
+      }
+    });
+    const openStatusButton = actions.createEl("button", { text: "Terminal /status" });
+    openStatusButton.disabled = !this.runtimeSetupInfo.supportsTerminalLaunch;
+    openStatusButton.addEventListener("click", async () => {
+      if (!this.currentThread) {
+        return;
+      }
+      try {
+        const { thread, result } = await this.orchestrator.launchRuntimeTerminal(this.currentThread.id, "status");
+        this.currentThread = thread;
+        new import_obsidian7.Notice(result.message);
+        this.render();
+      } catch (error) {
+        new import_obsidian7.Notice(error instanceof Error ? error.message : String(error));
+      }
+    });
+    const openLoginButton = actions.createEl("button", { text: "Terminal login" });
+    openLoginButton.disabled = !this.runtimeSetupInfo.supportsTerminalLaunch;
+    openLoginButton.addEventListener("click", async () => {
+      if (!this.currentThread) {
+        return;
+      }
+      try {
+        const { thread, result } = await this.orchestrator.launchRuntimeTerminal(this.currentThread.id, "login");
+        this.currentThread = thread;
+        new import_obsidian7.Notice(result.message);
+        this.render();
+      } catch (error) {
+        new import_obsidian7.Notice(error instanceof Error ? error.message : String(error));
+      }
+    });
+    const bootstrapButton = actions.createEl("button", { text: "Init .claude + CLAUDE.md" });
+    bootstrapButton.addEventListener("click", async () => {
+      if (!this.currentThread) {
+        return;
+      }
+      try {
+        const { thread, created, existing } = await this.orchestrator.initializeClaudeWorkspace(this.currentThread.id);
+        this.currentThread = thread;
+        const summary = created.length ? `Created ${created.join(", ")}` : `Already existed: ${existing.join(", ") || ".claude, CLAUDE.md"}`;
+        new import_obsidian7.Notice(summary);
+        this.render();
+      } catch (error) {
+        new import_obsidian7.Notice(error instanceof Error ? error.message : String(error));
+      }
+    });
+    const docsButton = actions.createEl("button", { text: "Open Claude docs" });
+    docsButton.addEventListener("click", () => {
+      window.open("https://code.claude.com/docs/en/vs-code", "_blank");
+    });
+    const commands = section.createDiv({ cls: "claude-runtime-commands" });
+    for (const command of this.runtimeSetupInfo.commands) {
+      const row = commands.createDiv({ cls: "claude-runtime-command" });
+      const body = row.createDiv({ cls: "claude-runtime-command-body" });
+      body.createDiv({ cls: "claude-runtime-command-label", text: command.label });
+      body.createDiv({ cls: "claude-muted", text: command.description });
+      body.createEl("code", { text: command.command });
+      const copyButton = row.createEl("button", { text: "Copy" });
+      copyButton.addEventListener("click", async () => {
+        const copied = await this.copyToClipboard(command.command);
+        if (copied) {
+          new import_obsidian7.Notice(`Copied: ${command.label}`);
+        } else {
+          new import_obsidian7.Notice("Unable to copy command in this environment.");
+        }
+      });
+    }
+    if (this.runtimeDiagnostics) {
+      const diag = section.createDiv({
+        cls: `claude-runtime-diagnostics ${this.runtimeDiagnostics.success ? "is-success" : "is-failed"}`
+      });
+      diag.createDiv({
+        cls: "claude-runtime-diagnostics-summary",
+        text: this.runtimeDiagnostics.summary
+      });
+      if (this.runtimeDiagnosticsAt) {
+        diag.createDiv({
+          cls: "claude-muted",
+          text: `Last run: ${new Date(this.runtimeDiagnosticsAt).toLocaleString()}`
+        });
+      }
+      const details = diag.createEl("details");
+      details.createEl("summary", { text: "Diagnostic output" });
+      for (const entry of this.runtimeDiagnostics.entries) {
+        const entryEl = details.createDiv({ cls: "claude-runtime-diagnostic-entry" });
+        entryEl.createDiv({
+          text: `${entry.success ? "OK" : "ERR"} ${entry.label}`
+        });
+        entryEl.createEl("code", { text: entry.command });
+        entryEl.createEl("pre", { text: entry.output });
+      }
     }
   }
   renderThreads() {
@@ -1578,6 +2016,27 @@ var ClaudePanelView = class extends import_obsidian7.ItemView {
       const modal = new BatchApplyModal(this.leaf, paths, resolve2);
       modal.open();
     });
+  }
+  async copyToClipboard(value) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch (e) {
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        return ok;
+      } catch (e2) {
+        return false;
+      }
+    }
   }
 };
 
