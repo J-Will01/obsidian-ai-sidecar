@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => ClaudePanelPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian9 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/agent/AgentOrchestrator.ts
 var import_obsidian2 = require("obsidian");
@@ -120,7 +120,7 @@ function defaultThread(title, settings) {
     toolLogs: [],
     settings: {
       mode: "normal",
-      model: (_a = settings == null ? void 0 : settings.model) != null ? _a : "mock"
+      model: (_a = settings == null ? void 0 : settings.model) != null ? _a : "claude-code"
     }
   };
 }
@@ -228,7 +228,7 @@ var AgentOrchestrator = class {
     this.modelClients = new Map(args.models.map((model) => [model.id, model]));
     this.applyEngine = args.applyEngine;
     this.permissionManager = args.permissionManager;
-    this.defaultModel = (_a = args.defaultModel) != null ? _a : (() => "mock");
+    this.defaultModel = (_a = args.defaultModel) != null ? _a : (() => "claude-code");
   }
   async listThreads() {
     return this.store.listThreads();
@@ -237,7 +237,15 @@ var AgentOrchestrator = class {
     return this.store.createThread(title, { model: this.defaultModel() });
   }
   async loadThread(threadId) {
-    return this.store.getThread(threadId);
+    const thread = await this.store.getThread(threadId);
+    if (!thread) {
+      return null;
+    }
+    if (thread.settings.model !== "claude-code") {
+      thread.settings.model = "claude-code";
+      await this.store.saveThread(thread);
+    }
+    return thread;
   }
   async setMode(threadId, mode) {
     return this.store.updateThread(threadId, (thread) => {
@@ -356,8 +364,8 @@ ${result2.snippet}`).join("\n\n"),
       this.logTool(working, "search_notes", { query: searchQuery, limit: 8 }, true, `Found ${results.length} results`);
     }
     const attachments = working.attachments.filter((attachment) => attachment.included);
-    const modelId = working.settings.model || "mock";
-    const model = (_a = this.modelClients.get(modelId)) != null ? _a : this.modelClients.get("mock");
+    const modelId = working.settings.model || "claude-code";
+    const model = (_a = this.modelClients.get(modelId)) != null ? _a : this.modelClients.get("claude-code");
     if (!model) {
       throw new Error("No model clients registered.");
     }
@@ -640,41 +648,15 @@ var ApplyEngine = class {
   }
 };
 
-// src/model/providers/AnthropicClient.ts
-var import_obsidian4 = require("obsidian");
-var SYSTEM_PROMPT = [
-  "You are an Obsidian assistant that must return strict JSON only.",
-  "Never wrap output in markdown or prose around the JSON object.",
-  "JSON shape:",
-  '{ "assistantText": "string", "proposals": [ { "action": "modify|create|rename", "path": "string", "content"?: "string", "from"?: "string", "to"?: "string", "rationale"?: "string" } ] }',
-  "Rules:",
-  "- Only include proposals when a file change is needed.",
-  "- For modify/create, include full file content in content.",
-  "- For rename, include from and to."
-].join("\n");
-function formatRequestInput(request) {
-  const attachments = request.attachments.map((attachment, index) => {
-    const source = attachment.source.path || attachment.source.query || "unknown";
-    const snapshot = attachment.contentSnapshot.slice(0, 12e3);
-    return `Attachment ${index + 1}
-Type: ${attachment.type}
-Source: ${source}
-Content:
-${snapshot}`;
-  }).join("\n\n---\n\n");
-  return [
-    `User message:
-${request.userMessage}`,
-    attachments ? `
-Attached context:
-${attachments}` : ""
-  ].join("\n");
+// src/model/providers/ClaudeCodeClient.ts
+var import_child_process = require("child_process");
+function splitArgs(input) {
+  return input.split(/\s+/).map((part) => part.trim()).filter((part) => part.length > 0);
 }
-function extractTextContent(payload) {
-  if (!payload || typeof payload !== "object") {
-    return "";
-  }
-  const content = payload.content;
+function extractTextFromAssistantPayload(payload) {
+  const message = payload.message;
+  const container = message != null ? message : payload;
+  const content = container.content;
   if (!Array.isArray(content)) {
     return "";
   }
@@ -742,165 +724,146 @@ function parseModelResult(rawText) {
       proposals: []
     };
   }
-  const assistantText = typeof parsed.assistantText === "string" && parsed.assistantText.trim() ? parsed.assistantText : "Model response parsed, but assistantText was empty.";
+  const assistantText = typeof parsed.assistantText === "string" && parsed.assistantText.trim() ? parsed.assistantText : "Claude Code returned JSON with no assistantText.";
   return {
     assistantText,
     proposals: parseProposals(parsed.proposals)
   };
 }
-var AnthropicClient = class {
+function formatUserPrompt(request) {
+  const attachments = request.attachments.map((attachment, index) => {
+    const source = attachment.source.path || attachment.source.query || "unknown";
+    const snapshot = attachment.contentSnapshot.slice(0, 12e3);
+    return [
+      `Attachment ${index + 1}`,
+      `Type: ${attachment.type}`,
+      `Source: ${source}`,
+      "Content:",
+      snapshot
+    ].join("\n");
+  }).join("\n\n---\n\n");
+  return [
+    "Task:",
+    request.userMessage,
+    attachments ? `
+Attached context:
+${attachments}` : ""
+  ].join("\n");
+}
+function mapPermissionMode(mode) {
+  if (mode === "plan") {
+    return "plan";
+  }
+  if (mode === "auto-apply") {
+    return "acceptEdits";
+  }
+  return "default";
+}
+var ClaudeCodeClient = class {
   constructor(getConfig) {
-    this.id = "anthropic";
+    this.id = "claude-code";
     this.getConfig = getConfig;
   }
   async stream(request, hooks) {
-    var _a;
     const config = this.getConfig();
-    if (!config.apiKey) {
-      throw new Error("Anthropic API key is missing. Set it in plugin settings.");
+    const args = [
+      "-p",
+      formatUserPrompt(request),
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      mapPermissionMode(request.thread.settings.mode),
+      "--max-turns",
+      String(config.maxTurns)
+    ];
+    if (config.model.trim()) {
+      args.push("--model", config.model.trim());
     }
-    const response = await (0, import_obsidian4.requestUrl)({
-      url: "https://api.anthropic.com/v1/messages",
-      method: "POST",
-      headers: {
-        "x-api-key": config.apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        model: config.model,
-        max_tokens: config.maxTokens,
-        temperature: config.temperature,
-        system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: formatRequestInput(request)
+    if (config.appendSystemPrompt.trim()) {
+      args.push("--append-system-prompt", config.appendSystemPrompt.trim());
+    }
+    args.push(...splitArgs(config.extraArgs));
+    const streamedAssistantChunks = [];
+    const rawStdoutChunks = [];
+    const rawStderrChunks = [];
+    let finalResultText = "";
+    let resultErrorText = "";
+    await new Promise((resolve, reject) => {
+      const child = (0, import_child_process.spawn)(config.executable, args, {
+        cwd: config.cwd,
+        env: process.env
+      });
+      let lineBuffer = "";
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        var _a, _b, _c;
+        rawStdoutChunks.push(chunk);
+        lineBuffer += chunk;
+        let newLine = lineBuffer.indexOf("\n");
+        while (newLine >= 0) {
+          const line = lineBuffer.slice(0, newLine).trim();
+          lineBuffer = lineBuffer.slice(newLine + 1);
+          if (line) {
+            try {
+              const event = JSON.parse(line);
+              const type = String((_a = event.type) != null ? _a : "");
+              if (type === "assistant") {
+                const assistantText = extractTextFromAssistantPayload(event);
+                if (assistantText) {
+                  streamedAssistantChunks.push(assistantText);
+                  (_b = hooks == null ? void 0 : hooks.onToken) == null ? void 0 : _b.call(hooks, streamedAssistantChunks.join("\n\n"));
+                }
+              }
+              if (type === "result" && typeof event.result === "string") {
+                finalResultText = String(event.result);
+                (_c = hooks == null ? void 0 : hooks.onToken) == null ? void 0 : _c.call(hooks, finalResultText);
+                if (event.is_error === true) {
+                  resultErrorText = finalResultText;
+                }
+              }
+            } catch (e) {
+            }
           }
-        ]
-      }),
-      throw: false
+          newLine = lineBuffer.indexOf("\n");
+        }
+      });
+      child.stderr.on("data", (chunk) => {
+        rawStderrChunks.push(chunk);
+      });
+      child.on("error", (error) => {
+        if (error.code === "ENOENT") {
+          reject(new Error(`Claude executable not found: ${config.executable}`));
+          return;
+        }
+        reject(error);
+      });
+      child.on("close", (code) => {
+        if (code !== 0) {
+          reject(new Error(rawStderrChunks.join("").trim() || `Claude CLI exited with code ${code}`));
+          return;
+        }
+        if (lineBuffer.trim()) {
+          rawStdoutChunks.push(lineBuffer);
+        }
+        resolve();
+      });
     });
-    if (response.status < 200 || response.status >= 300) {
-      throw new Error(`Anthropic request failed (${response.status}): ${response.text}`);
+    const candidate = (finalResultText || streamedAssistantChunks.join("\n\n")).trim();
+    if (resultErrorText) {
+      throw new Error(resultErrorText);
     }
-    const rawText = extractTextContent(response.json);
-    const parsed = parseModelResult(rawText);
-    let streaming = "";
-    for (const piece of parsed.assistantText.split(/(\s+)/)) {
-      streaming += piece;
-      (_a = hooks == null ? void 0 : hooks.onToken) == null ? void 0 : _a.call(hooks, streaming);
+    if (candidate) {
+      return parseModelResult(candidate);
     }
-    return parsed;
-  }
-};
-
-// src/model/providers/MockModelClient.ts
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-function toBullets(content) {
-  const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0).slice(0, 5);
-  if (lines.length === 0) {
-    return "- (No content found)";
-  }
-  return lines.map((line) => `- ${line}`).join("\n");
-}
-function rewriteSelection(selected) {
-  const trimmed = selected.trim();
-  if (!trimmed) {
-    return selected;
-  }
-  return `Rewritten:
-${trimmed}`;
-}
-function findAttachment(attachments, type) {
-  return attachments.find((item) => item.type === type && item.included);
-}
-function sanitizeFileName(name) {
-  const cleaned = name.replace(/[^a-z0-9\-\s]/gi, "").trim().replace(/\s+/g, "-").toLowerCase();
-  return cleaned || "consolidated-notes";
-}
-function buildResult(request) {
-  const content = request.userMessage.trim();
-  const lower = content.toLowerCase();
-  const proposals = [];
-  const selectionAttachment = findAttachment(request.attachments, "selection");
-  const noteAttachment = findAttachment(request.attachments, "note");
-  const searchAttachment = findAttachment(request.attachments, "search");
-  let assistantText = "I reviewed the request and prepared a response.";
-  if (lower.includes("rewrite") && selectionAttachment && noteAttachment && noteAttachment.source.path) {
-    const rewritten = rewriteSelection(selectionAttachment.contentSnapshot);
-    const originalContent = noteAttachment.contentSnapshot;
-    const replaced = originalContent.includes(selectionAttachment.contentSnapshot) ? originalContent.replace(selectionAttachment.contentSnapshot, rewritten) : `${rewritten}
-
-${originalContent}`;
-    proposals.push({
-      action: "modify",
-      path: noteAttachment.source.path,
-      content: replaced,
-      rationale: "Rewrite selected text in-place."
-    });
-    assistantText = "I drafted a rewrite for the attached selection and prepared a file change proposal.";
-  } else if (lower.includes("summarize") && noteAttachment && noteAttachment.source.path) {
-    const bullets = toBullets(noteAttachment.contentSnapshot);
-    proposals.push({
-      action: "modify",
-      path: noteAttachment.source.path,
-      content: `## Summary
-${bullets}
-
-${noteAttachment.contentSnapshot}`,
-      rationale: "Insert summary bullets at the top of the note."
-    });
-    assistantText = "I created a summary block and prepared an insertion proposal at the top of the note.";
-  } else if (lower.includes("consolid") && searchAttachment) {
-    const match = lower.match(/about\s+(.+?)(?:\.|$)/i);
-    const topic = ((match == null ? void 0 : match[1]) || "topic").trim();
-    const fileName = `${sanitizeFileName(topic)}-consolidated.md`;
-    proposals.push({
-      action: "create",
-      path: fileName,
-      content: `# Consolidated Notes: ${topic}
-
-${searchAttachment.contentSnapshot}`,
-      rationale: "Create a consolidated document from search results."
-    });
-    assistantText = "I prepared a consolidated note proposal from the search context.";
-  } else {
-    assistantText = [
-      "I can read context, run vault search, and prepare file proposals.",
-      "For a concrete edit proposal, try prompts like:",
-      "- Rewrite the attached selection",
-      "- Summarize the attached note into bullets",
-      "- Find notes about X and create a consolidated doc"
-    ].join("\n");
-  }
-  return {
-    assistantText,
-    proposals
-  };
-}
-var MockModelClient = class {
-  constructor() {
-    this.id = "mock";
-  }
-  async stream(request, hooks) {
-    var _a;
-    const result = buildResult(request);
-    let partial = "";
-    for (const token of result.assistantText.split(/(\s+)/)) {
-      partial += token;
-      (_a = hooks == null ? void 0 : hooks.onToken) == null ? void 0 : _a.call(hooks, partial);
-      await sleep(16);
-    }
-    return result;
+    return parseModelResult(rawStdoutChunks.join("\n").trim());
   }
 };
 
 // src/settings/ClaudePanelSettingTab.ts
-var import_obsidian5 = require("obsidian");
-var ClaudePanelSettingTab = class extends import_obsidian5.PluginSettingTab {
+var import_obsidian4 = require("obsidian");
+var ClaudePanelSettingTab = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -909,41 +872,43 @@ var ClaudePanelSettingTab = class extends import_obsidian5.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Claude Panel" });
-    new import_obsidian5.Setting(containerEl).setName("Default thread model").setDesc("Model selected for newly created threads.").addDropdown(
-      (dropdown) => dropdown.addOption("mock", "mock").addOption("anthropic", "anthropic").setValue(this.plugin.settings.defaultThreadModel).onChange(async (value) => {
+    new import_obsidian4.Setting(containerEl).setName("Default thread model").setDesc("Current runtime backend.").addDropdown(
+      (dropdown) => dropdown.addOption("claude-code", "claude-code").setValue(this.plugin.settings.defaultThreadModel).onChange(async (value) => {
         this.plugin.settings.defaultThreadModel = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Anthropic API key").setDesc("Stored in plugin data inside this vault.").addText((text) => {
-      text.inputEl.type = "password";
-      text.setPlaceholder("sk-ant-...").setValue(this.plugin.settings.anthropicApiKey).onChange(async (value) => {
-        this.plugin.settings.anthropicApiKey = value.trim();
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian5.Setting(containerEl).setName("Anthropic model").setDesc("Used when a thread model is set to anthropic.").addText(
-      (text) => text.setPlaceholder("claude-3-5-sonnet-latest").setValue(this.plugin.settings.anthropicModel).onChange(async (value) => {
-        this.plugin.settings.anthropicModel = value.trim();
+    new import_obsidian4.Setting(containerEl).setName("Claude executable").setDesc("Path or command name for Claude Code CLI.").addText(
+      (text) => text.setPlaceholder("claude").setValue(this.plugin.settings.claudeCodeExecutable).onChange(async (value) => {
+        this.plugin.settings.claudeCodeExecutable = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Anthropic max tokens").setDesc("Upper bound for response tokens.").addText(
-      (text) => text.setPlaceholder("1600").setValue(String(this.plugin.settings.anthropicMaxTokens)).onChange(async (value) => {
+    new import_obsidian4.Setting(containerEl).setName("Claude model").setDesc("Example: sonnet, opus, or a concrete Claude model name.").addText(
+      (text) => text.setPlaceholder("sonnet").setValue(this.plugin.settings.claudeCodeModel).onChange(async (value) => {
+        this.plugin.settings.claudeCodeModel = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Claude max turns").setDesc("Maximum turns per Claude runtime invocation.").addText(
+      (text) => text.setPlaceholder("8").setValue(String(this.plugin.settings.claudeCodeMaxTurns)).onChange(async (value) => {
         const parsed = Number.parseInt(value, 10);
         if (Number.isFinite(parsed) && parsed > 0) {
-          this.plugin.settings.anthropicMaxTokens = parsed;
+          this.plugin.settings.claudeCodeMaxTurns = parsed;
           await this.plugin.saveSettings();
         }
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Anthropic temperature").setDesc("Sampling temperature between 0 and 1.").addText(
-      (text) => text.setPlaceholder("0.2").setValue(String(this.plugin.settings.anthropicTemperature)).onChange(async (value) => {
-        const parsed = Number.parseFloat(value);
-        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
-          this.plugin.settings.anthropicTemperature = parsed;
-          await this.plugin.saveSettings();
-        }
+    new import_obsidian4.Setting(containerEl).setName("Append system prompt").setDesc("Extra instruction passed to Claude CLI via --append-system-prompt.").addText(
+      (text) => text.setPlaceholder("Return strict JSON...").setValue(this.plugin.settings.claudeCodeAppendSystemPrompt).onChange(async (value) => {
+        this.plugin.settings.claudeCodeAppendSystemPrompt = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Extra CLI args").setDesc("Optional extra args appended to Claude command.").addText(
+      (text) => text.setPlaceholder("--allowedTools Edit,Read").setValue(this.plugin.settings.claudeCodeExtraArgs).onChange(async (value) => {
+        this.plugin.settings.claudeCodeExtraArgs = value;
+        await this.plugin.saveSettings();
       })
     );
   }
@@ -951,21 +916,22 @@ var ClaudePanelSettingTab = class extends import_obsidian5.PluginSettingTab {
 
 // src/settings/PluginSettings.ts
 var DEFAULT_SETTINGS = {
-  defaultThreadModel: "mock",
-  anthropicApiKey: "",
-  anthropicModel: "claude-3-5-sonnet-latest",
-  anthropicMaxTokens: 1600,
-  anthropicTemperature: 0.2
+  defaultThreadModel: "claude-code",
+  claudeCodeExecutable: "claude",
+  claudeCodeModel: "sonnet",
+  claudeCodeMaxTurns: 8,
+  claudeCodeAppendSystemPrompt: 'Return strict JSON only: {"assistantText": string, "proposals": [{"action":"modify|create|rename","path":string,"content"?:string,"from"?:string,"to"?:string,"rationale"?:string}]}.',
+  claudeCodeExtraArgs: ""
 };
 
 // src/tools/EditorTools.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var EditorTools = class {
   constructor(app) {
     this.app = app;
   }
   getSelection() {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
     if (!view || !view.file) {
       return null;
     }
@@ -987,7 +953,7 @@ var EditorTools = class {
     };
   }
   async getActiveNote() {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
     if (!view || !view.file) {
       return null;
     }
@@ -1000,15 +966,15 @@ var EditorTools = class {
 };
 
 // src/tools/VaultTools.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 var VaultTools = class {
   constructor(app) {
     this.app = app;
   }
   async readNote(path) {
-    const normalized = (0, import_obsidian7.normalizePath)(path);
+    const normalized = (0, import_obsidian6.normalizePath)(path);
     const file = this.app.vault.getAbstractFileByPath(normalized);
-    if (!(file instanceof import_obsidian7.TFile)) {
+    if (!(file instanceof import_obsidian6.TFile)) {
       return null;
     }
     return {
@@ -1040,29 +1006,29 @@ var VaultTools = class {
     return matches;
   }
   async writeNote(path, content) {
-    const normalized = (0, import_obsidian7.normalizePath)(path);
+    const normalized = (0, import_obsidian6.normalizePath)(path);
     const file = this.app.vault.getAbstractFileByPath(normalized);
-    if (file instanceof import_obsidian7.TFile) {
+    if (file instanceof import_obsidian6.TFile) {
       await this.app.vault.modify(file, content);
       return;
     }
     await this.createNote(normalized, content);
   }
   async createNote(path, content) {
-    const normalized = (0, import_obsidian7.normalizePath)(path);
+    const normalized = (0, import_obsidian6.normalizePath)(path);
     await this.ensureParentFolder(normalized);
     await this.app.vault.create(normalized, content);
   }
   async renameNote(from, to) {
-    const source = this.app.vault.getAbstractFileByPath((0, import_obsidian7.normalizePath)(from));
-    if (!(source instanceof import_obsidian7.TFile)) {
+    const source = this.app.vault.getAbstractFileByPath((0, import_obsidian6.normalizePath)(from));
+    if (!(source instanceof import_obsidian6.TFile)) {
       throw new Error(`Cannot rename missing note: ${from}`);
     }
-    await this.ensureParentFolder((0, import_obsidian7.normalizePath)(to));
-    await this.app.fileManager.renameFile(source, (0, import_obsidian7.normalizePath)(to));
+    await this.ensureParentFolder((0, import_obsidian6.normalizePath)(to));
+    await this.app.fileManager.renameFile(source, (0, import_obsidian6.normalizePath)(to));
   }
   async listFolder(path) {
-    const prefix = (0, import_obsidian7.normalizePath)(path).replace(/\/$/, "");
+    const prefix = (0, import_obsidian6.normalizePath)(path).replace(/\/$/, "");
     const files = this.app.vault.getMarkdownFiles();
     return files.filter((file) => file.path.startsWith(prefix)).map((file) => file.path);
   }
@@ -1072,7 +1038,7 @@ var VaultTools = class {
     if (parts.length === 0) {
       return;
     }
-    const folderPath = (0, import_obsidian7.normalizePath)(parts.join("/"));
+    const folderPath = (0, import_obsidian6.normalizePath)(parts.join("/"));
     if (await this.app.vault.adapter.exists(folderPath)) {
       return;
     }
@@ -1088,9 +1054,9 @@ var VaultTools = class {
 };
 
 // src/views/ClaudePanelView.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 var CLAUDE_PANEL_VIEW_TYPE = "claude-panel-view";
-var BatchApplyModal = class extends import_obsidian8.Modal {
+var BatchApplyModal = class extends import_obsidian7.Modal {
   constructor(leaf, paths, onDecision) {
     super(leaf.app);
     this.decided = false;
@@ -1130,7 +1096,7 @@ var BatchApplyModal = class extends import_obsidian8.Modal {
     }
   }
 };
-var ClaudePanelView = class extends import_obsidian8.ItemView {
+var ClaudePanelView = class extends import_obsidian7.ItemView {
   constructor(leaf, orchestrator) {
     super(leaf);
     this.threadIndex = [];
@@ -1170,9 +1136,9 @@ var ClaudePanelView = class extends import_obsidian8.ItemView {
     try {
       this.currentThread = await this.orchestrator.attachCurrentNote(this.currentThread.id);
       this.render();
-      new import_obsidian8.Notice("Attached active note.");
+      new import_obsidian7.Notice("Attached active note.");
     } catch (error) {
-      new import_obsidian8.Notice(error instanceof Error ? error.message : String(error));
+      new import_obsidian7.Notice(error instanceof Error ? error.message : String(error));
     }
   }
   async sendSelectionFromCommand() {
@@ -1187,7 +1153,7 @@ var ClaudePanelView = class extends import_obsidian8.ItemView {
       this.render();
       await this.sendComposerMessage("Rewrite the attached selection.");
     } catch (error) {
-      new import_obsidian8.Notice(error instanceof Error ? error.message : String(error));
+      new import_obsidian7.Notice(error instanceof Error ? error.message : String(error));
     }
   }
   async focusComposer() {
@@ -1242,13 +1208,14 @@ var ClaudePanelView = class extends import_obsidian8.ItemView {
     });
     const modelLabel = header.createEl("label", { text: "Model" });
     const modelSelect = modelLabel.createEl("select");
-    ["mock", "anthropic"].forEach((model) => {
+    ["claude-code"].forEach((model) => {
       var _a;
       const option = modelSelect.createEl("option", { value: model, text: model });
       if (((_a = this.currentThread) == null ? void 0 : _a.settings.model) === model) {
         option.selected = true;
       }
     });
+    modelSelect.disabled = true;
     modelSelect.addEventListener("change", async () => {
       if (!this.currentThread) {
         return;
@@ -1365,7 +1332,7 @@ var ClaudePanelView = class extends import_obsidian8.ItemView {
       }
       const pending = this.currentThread.proposedChanges.filter((change) => change.status === "proposed");
       if (pending.length === 0) {
-        new import_obsidian8.Notice("No pending proposals to apply.");
+        new import_obsidian7.Notice("No pending proposals to apply.");
         return;
       }
       if (this.currentThread.settings.mode === "normal") {
@@ -1506,12 +1473,13 @@ var ClaudePanelView = class extends import_obsidian8.ItemView {
 };
 
 // src/main.ts
-var ClaudePanelPlugin = class extends import_obsidian9.Plugin {
+var ClaudePanelPlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
   }
   async onload() {
+    var _a;
     await this.loadSettings();
     this.store = new ThreadStore(this.app);
     await this.store.init();
@@ -1519,17 +1487,20 @@ var ClaudePanelPlugin = class extends import_obsidian9.Plugin {
     const editorTools = new EditorTools(this.app);
     const permissionManager = new PermissionManager();
     const applyEngine = new ApplyEngine(this.app);
+    const adapterWithBasePath = this.app.vault.adapter;
+    const vaultBasePath = (_a = adapterWithBasePath.basePath) != null ? _a : process.cwd();
     this.orchestrator = new AgentOrchestrator({
       store: this.store,
       vaultTools,
       editorTools,
       models: [
-        new MockModelClient(),
-        new AnthropicClient(() => ({
-          apiKey: this.settings.anthropicApiKey,
-          model: this.settings.anthropicModel,
-          maxTokens: this.settings.anthropicMaxTokens,
-          temperature: this.settings.anthropicTemperature
+        new ClaudeCodeClient(() => ({
+          executable: this.settings.claudeCodeExecutable,
+          model: this.settings.claudeCodeModel,
+          maxTurns: this.settings.claudeCodeMaxTurns,
+          appendSystemPrompt: this.settings.claudeCodeAppendSystemPrompt,
+          extraArgs: this.settings.claudeCodeExtraArgs,
+          cwd: vaultBasePath
         }))
       ],
       applyEngine,
@@ -1578,7 +1549,7 @@ var ClaudePanelPlugin = class extends import_obsidian9.Plugin {
       callback: async () => {
         const view = await this.activateView();
         await view.createNewThread("Demo thread");
-        new import_obsidian9.Notice("Created demo thread.");
+        new import_obsidian8.Notice("Created demo thread.");
       }
     });
   }

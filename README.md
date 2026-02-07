@@ -44,12 +44,15 @@ Then open Obsidian:
 3. Enable `Claude Panel`
 4. Run command: `Open Claude Panel`
 
-## Anthropic Setup
+## Claude Code Runtime Setup
 
-1. Open `Settings -> Claude Panel`
-2. Set `Default thread model` to `anthropic` (optional)
-3. Paste your `Anthropic API key`
-4. Set your `Anthropic model` (for example `claude-3-5-sonnet-latest`)
+This plugin currently targets the Claude Code runtime (CLI wrapper mode), not direct API calls.
+
+1. Install Claude Code CLI and authenticate in your shell.
+   - If needed, run `claude` and then run `/login`.
+2. Open `Settings -> Claude Panel`.
+3. Confirm `Claude executable` (usually `claude`).
+4. Optionally set `Claude model` and `Claude max turns`.
 
 ## Plugin Artifacts
 

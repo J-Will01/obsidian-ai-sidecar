@@ -2,8 +2,7 @@ import { Notice, Plugin } from "obsidian";
 import { AgentOrchestrator } from "./agent/AgentOrchestrator";
 import { PermissionManager } from "./agent/PermissionManager";
 import { ApplyEngine } from "./diff/ApplyEngine";
-import { AnthropicClient } from "./model/providers/AnthropicClient";
-import { MockModelClient } from "./model/providers/MockModelClient";
+import { ClaudeCodeClient } from "./model/providers/ClaudeCodeClient";
 import { ClaudePanelSettingTab } from "./settings/ClaudePanelSettingTab";
 import { ClaudePanelSettings, DEFAULT_SETTINGS } from "./settings/PluginSettings";
 import { ThreadStore } from "./state/ThreadStore";
@@ -26,18 +25,21 @@ export default class ClaudePanelPlugin extends Plugin {
     const editorTools = new EditorTools(this.app);
     const permissionManager = new PermissionManager();
     const applyEngine = new ApplyEngine(this.app);
+    const adapterWithBasePath = this.app.vault.adapter as unknown as { basePath?: string };
+    const vaultBasePath = adapterWithBasePath.basePath ?? process.cwd();
 
     this.orchestrator = new AgentOrchestrator({
       store: this.store,
       vaultTools,
       editorTools,
       models: [
-        new MockModelClient(),
-        new AnthropicClient(() => ({
-          apiKey: this.settings.anthropicApiKey,
-          model: this.settings.anthropicModel,
-          maxTokens: this.settings.anthropicMaxTokens,
-          temperature: this.settings.anthropicTemperature
+        new ClaudeCodeClient(() => ({
+          executable: this.settings.claudeCodeExecutable,
+          model: this.settings.claudeCodeModel,
+          maxTurns: this.settings.claudeCodeMaxTurns,
+          appendSystemPrompt: this.settings.claudeCodeAppendSystemPrompt,
+          extraArgs: this.settings.claudeCodeExtraArgs,
+          cwd: vaultBasePath
         }))
       ],
       applyEngine,

@@ -45,7 +45,7 @@ export class AgentOrchestrator {
     this.modelClients = new Map(args.models.map((model) => [model.id, model]));
     this.applyEngine = args.applyEngine;
     this.permissionManager = args.permissionManager;
-    this.defaultModel = args.defaultModel ?? (() => "mock");
+    this.defaultModel = args.defaultModel ?? (() => "claude-code");
   }
 
   async listThreads() {
@@ -57,7 +57,17 @@ export class AgentOrchestrator {
   }
 
   async loadThread(threadId: string): Promise<Thread | null> {
-    return this.store.getThread(threadId);
+    const thread = await this.store.getThread(threadId);
+    if (!thread) {
+      return null;
+    }
+
+    if (thread.settings.model !== "claude-code") {
+      thread.settings.model = "claude-code";
+      await this.store.saveThread(thread);
+    }
+
+    return thread;
   }
 
   async setMode(threadId: string, mode: AgentMode): Promise<Thread> {
@@ -196,8 +206,8 @@ export class AgentOrchestrator {
     }
 
     const attachments = working.attachments.filter((attachment) => attachment.included);
-    const modelId = working.settings.model || "mock";
-    const model = this.modelClients.get(modelId) ?? this.modelClients.get("mock");
+    const modelId = working.settings.model || "claude-code";
+    const model = this.modelClients.get(modelId) ?? this.modelClients.get("claude-code");
     if (!model) {
       throw new Error("No model clients registered.");
     }

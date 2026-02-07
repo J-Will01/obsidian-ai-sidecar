@@ -17,74 +17,82 @@ export class ClaudePanelSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Default thread model")
-      .setDesc("Model selected for newly created threads.")
+      .setDesc("Current runtime backend.")
       .addDropdown((dropdown) =>
         dropdown
-          .addOption("mock", "mock")
-          .addOption("anthropic", "anthropic")
+          .addOption("claude-code", "claude-code")
           .setValue(this.plugin.settings.defaultThreadModel)
-          .onChange(async (value: "mock" | "anthropic") => {
+          .onChange(async (value: "claude-code") => {
             this.plugin.settings.defaultThreadModel = value;
             await this.plugin.saveSettings();
           })
       );
 
     new Setting(containerEl)
-      .setName("Anthropic API key")
-      .setDesc("Stored in plugin data inside this vault.")
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text
-          .setPlaceholder("sk-ant-...")
-          .setValue(this.plugin.settings.anthropicApiKey)
-          .onChange(async (value) => {
-            this.plugin.settings.anthropicApiKey = value.trim();
-            await this.plugin.saveSettings();
-          });
-      });
-
-    new Setting(containerEl)
-      .setName("Anthropic model")
-      .setDesc("Used when a thread model is set to anthropic.")
+      .setName("Claude executable")
+      .setDesc("Path or command name for Claude Code CLI.")
       .addText((text) =>
         text
-          .setPlaceholder("claude-3-5-sonnet-latest")
-          .setValue(this.plugin.settings.anthropicModel)
+          .setPlaceholder("claude")
+          .setValue(this.plugin.settings.claudeCodeExecutable)
           .onChange(async (value) => {
-            this.plugin.settings.anthropicModel = value.trim();
+            this.plugin.settings.claudeCodeExecutable = value.trim();
             await this.plugin.saveSettings();
           })
       );
 
     new Setting(containerEl)
-      .setName("Anthropic max tokens")
-      .setDesc("Upper bound for response tokens.")
+      .setName("Claude model")
+      .setDesc("Example: sonnet, opus, or a concrete Claude model name.")
       .addText((text) =>
         text
-          .setPlaceholder("1600")
-          .setValue(String(this.plugin.settings.anthropicMaxTokens))
+          .setPlaceholder("sonnet")
+          .setValue(this.plugin.settings.claudeCodeModel)
+          .onChange(async (value) => {
+            this.plugin.settings.claudeCodeModel = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Claude max turns")
+      .setDesc("Maximum turns per Claude runtime invocation.")
+      .addText((text) =>
+        text
+          .setPlaceholder("8")
+          .setValue(String(this.plugin.settings.claudeCodeMaxTurns))
           .onChange(async (value) => {
             const parsed = Number.parseInt(value, 10);
             if (Number.isFinite(parsed) && parsed > 0) {
-              this.plugin.settings.anthropicMaxTokens = parsed;
+              this.plugin.settings.claudeCodeMaxTurns = parsed;
               await this.plugin.saveSettings();
             }
           })
       );
 
     new Setting(containerEl)
-      .setName("Anthropic temperature")
-      .setDesc("Sampling temperature between 0 and 1.")
+      .setName("Append system prompt")
+      .setDesc("Extra instruction passed to Claude CLI via --append-system-prompt.")
       .addText((text) =>
         text
-          .setPlaceholder("0.2")
-          .setValue(String(this.plugin.settings.anthropicTemperature))
+          .setPlaceholder("Return strict JSON...")
+          .setValue(this.plugin.settings.claudeCodeAppendSystemPrompt)
           .onChange(async (value) => {
-            const parsed = Number.parseFloat(value);
-            if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
-              this.plugin.settings.anthropicTemperature = parsed;
-              await this.plugin.saveSettings();
-            }
+            this.plugin.settings.claudeCodeAppendSystemPrompt = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Extra CLI args")
+      .setDesc("Optional extra args appended to Claude command.")
+      .addText((text) =>
+        text
+          .setPlaceholder("--allowedTools Edit,Read")
+          .setValue(this.plugin.settings.claudeCodeExtraArgs)
+          .onChange(async (value) => {
+            this.plugin.settings.claudeCodeExtraArgs = value;
+            await this.plugin.saveSettings();
           })
       );
   }

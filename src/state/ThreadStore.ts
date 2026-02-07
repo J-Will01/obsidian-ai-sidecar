@@ -26,7 +26,7 @@ function defaultThread(title?: string, settings?: Partial<ThreadSettings>): Thre
     toolLogs: [],
     settings: {
       mode: "normal",
-      model: settings?.model ?? "mock"
+      model: settings?.model ?? "claude-code"
     }
   };
 }

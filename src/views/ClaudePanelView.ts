@@ -189,12 +189,13 @@ export class ClaudePanelView extends ItemView {
 
     const modelLabel = header.createEl("label", { text: "Model" });
     const modelSelect = modelLabel.createEl("select");
-    ["mock", "anthropic"].forEach((model) => {
+    ["claude-code"].forEach((model) => {
       const option = modelSelect.createEl("option", { value: model, text: model });
       if (this.currentThread?.settings.model === model) {
         option.selected = true;
       }
     });
+    modelSelect.disabled = true;
 
     modelSelect.addEventListener("change", async () => {
       if (!this.currentThread) {
