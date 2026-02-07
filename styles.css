@@ -1,9 +1,13 @@
 .claude-panel {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto auto minmax(220px, 1fr) auto auto auto;
+  gap: 10px;
   height: 100%;
-  gap: 8px;
-  padding: 8px;
+  padding: 10px;
+  background:
+    radial-gradient(circle at 10% -10%, rgba(255, 255, 255, 0.06), transparent 35%),
+    radial-gradient(circle at 100% 0%, rgba(255, 255, 255, 0.04), transparent 30%),
+    var(--background-primary);
 }
 
 .claude-header,
@@ -11,44 +15,177 @@
 .claude-attachments,
 .claude-proposals,
 .claude-tools,
-.claude-threads {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  padding: 8px;
+.claude-threads,
+.claude-transcript {
+  border: 1px solid var(--background-modifier-border-hover);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--background-secondary) 82%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
 .claude-header {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 8px;
+  padding: 10px;
+}
+
+.claude-runtime-pill {
+  padding: 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.claude-mode-group {
+  display: inline-flex;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.claude-mode-group button {
+  border: 0;
+  border-right: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  padding: 5px 9px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.claude-mode-group button:last-child {
+  border-right: 0;
+}
+
+.claude-mode-group button.is-active {
+  background: color-mix(in srgb, var(--interactive-accent) 20%, transparent);
+  color: var(--text-normal);
+}
+
+.claude-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
-.claude-threads {
-  display: flex;
+.claude-header button,
+.claude-threads button,
+.claude-actions button {
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  background: color-mix(in srgb, var(--background-primary) 70%, transparent);
+  color: var(--text-normal);
+  cursor: pointer;
+}
+
+.claude-header button:hover,
+.claude-threads button:hover,
+.claude-actions button:hover {
+  border-color: var(--interactive-accent);
+}
+
+.claude-session-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(53, 120, 229, 0.13);
+  color: var(--text-accent);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.claude-threads,
+.claude-attachments,
+.claude-proposals,
+.claude-tools,
+.claude-composer {
+  padding: 10px;
+}
+
+.claude-thread-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
   gap: 8px;
   align-items: center;
 }
 
-.claude-transcript {
-  border: 1px solid var(--background-modifier-border);
+.claude-thread-row select,
+.claude-threads select,
+.claude-header select {
+  width: 100%;
+  min-width: 0;
   border-radius: 8px;
-  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  padding: 6px 8px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.claude-section-title {
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.claude-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
   overflow-y: auto;
-  flex: 1;
-  min-height: 200px;
+  min-height: 0;
 }
 
 .claude-message {
-  margin-bottom: 10px;
-  padding: 6px;
-  border-radius: 6px;
-  background: var(--background-secondary);
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--background-primary);
+}
+
+.claude-message-user {
+  border-color: rgba(53, 120, 229, 0.35);
+  background: rgba(53, 120, 229, 0.08);
+}
+
+.claude-message-assistant {
+  border-color: var(--background-modifier-border);
+}
+
+.claude-message-tool,
+.claude-message-system {
+  border-color: rgba(255, 180, 0, 0.35);
+  background: rgba(255, 180, 0, 0.08);
+}
+
+.claude-message-streaming {
+  outline: 1px dashed var(--interactive-accent);
 }
 
 .claude-message-role {
-  font-weight: 600;
-  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.claude-message-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-interface);
+  color: var(--text-normal);
 }
 
 .claude-attachments-list,
@@ -56,29 +193,31 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 8px;
 }
 
 .claude-attachment-chip,
 .claude-proposal-item {
   border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  padding: 6px;
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--background-primary);
 }
 
 .claude-diff {
+  margin-top: 8px;
   font-family: var(--font-monospace);
   font-size: 12px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 6px;
-  max-height: 160px;
+  max-height: 200px;
   overflow-y: auto;
-  background: var(--background-primary);
+  background: color-mix(in srgb, var(--background-primary) 80%, transparent);
 }
 
 .claude-diff-line {
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .claude-diff-line-add {
@@ -95,13 +234,6 @@
   color: var(--text-muted);
 }
 
-.claude-confirm-modal ul {
-  margin-top: 8px;
-  margin-bottom: 10px;
-  max-height: 220px;
-  overflow: auto;
-}
-
 .claude-composer {
   display: flex;
   flex-direction: column;
@@ -110,14 +242,32 @@
 
 .claude-composer textarea {
   width: 100%;
-  min-height: 80px;
+  min-height: 90px;
+  max-height: 260px;
   resize: vertical;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  padding: 8px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+}
+
+.claude-composer textarea:focus {
+  outline: 1px solid var(--interactive-accent);
 }
 
 .claude-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
+}
+
+.claude-confirm-modal ul {
+  margin-top: 8px;
+  margin-bottom: 10px;
+  max-height: 220px;
+  overflow: auto;
 }
 
 .claude-muted {

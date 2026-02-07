@@ -52,6 +52,7 @@ This plugin currently targets the Claude Code runtime (CLI wrapper mode), not di
    - If needed, run `claude` and then run `/login`.
 2. Open `Settings -> Claude Panel`.
 3. Confirm `Claude executable` (usually `claude`).
+   - If Obsidian shows `Claude executable not found`, set it explicitly to an absolute path (for example `/opt/homebrew/bin/claude`).
 4. Optionally set `Claude model` and `Claude max turns`.
 
 Session behavior:

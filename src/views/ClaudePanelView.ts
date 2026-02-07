@@ -170,63 +170,45 @@ export class ClaudePanelView extends ItemView {
   private renderHeader(): void {
     const header = this.contentEl.createDiv({ cls: "claude-header" });
 
-    const modeLabel = header.createEl("label", { text: "Mode" });
-    const modeSelect = modeLabel.createEl("select");
+    header.createDiv({ cls: "claude-runtime-pill", text: "Claude Code Runtime" });
+
+    const modeGroup = header.createDiv({ cls: "claude-mode-group" });
     ["plan", "normal", "auto-apply"].forEach((mode) => {
-      const option = modeSelect.createEl("option", { value: mode, text: mode });
-      if (this.currentThread?.settings.mode === mode) {
-        option.selected = true;
-      }
+      const button = modeGroup.createEl("button", {
+        text: mode,
+        cls: mode === this.currentThread?.settings.mode ? "is-active" : ""
+      });
+      button.addEventListener("click", async () => {
+        if (!this.currentThread) {
+          return;
+        }
+        this.currentThread = await this.orchestrator.setMode(
+          this.currentThread.id,
+          mode as Thread["settings"]["mode"]
+        );
+        this.render();
+      });
     });
 
-    modeSelect.addEventListener("change", async () => {
-      if (!this.currentThread) {
-        return;
-      }
-      this.currentThread = await this.orchestrator.setMode(this.currentThread.id, modeSelect.value as Thread["settings"]["mode"]);
-      this.render();
-    });
-
-    const modelLabel = header.createEl("label", { text: "Model" });
-    const modelSelect = modelLabel.createEl("select");
-    ["claude-code"].forEach((model) => {
-      const option = modelSelect.createEl("option", { value: model, text: model });
-      if (this.currentThread?.settings.model === model) {
-        option.selected = true;
-      }
-    });
-    modelSelect.disabled = true;
-
-    modelSelect.addEventListener("change", async () => {
-      if (!this.currentThread) {
-        return;
-      }
-      this.currentThread = await this.orchestrator.setModel(this.currentThread.id, modelSelect.value);
-      this.render();
-    });
-
-    const newButton = header.createEl("button", { text: "New Thread" });
-    newButton.addEventListener("click", async () => {
-      await this.createNewThread();
-    });
-
-    const attachButton = header.createEl("button", { text: "Attach Current Note" });
+    const actions = header.createDiv({ cls: "claude-header-actions" });
+    const attachButton = actions.createEl("button", { text: "Attach Current Note" });
     attachButton.addEventListener("click", async () => {
       await this.attachCurrentNoteFromCommand();
     });
 
-    const selectionButton = header.createEl("button", { text: "Send Selection" });
+    const selectionButton = actions.createEl("button", { text: "Send Selection" });
     selectionButton.addEventListener("click", async () => {
       await this.sendSelectionFromCommand();
     });
 
     if (this.currentThread?.claudeCodeSessionId) {
-      header.createDiv({
-        cls: "claude-muted",
-        text: `Session: ${this.currentThread.claudeCodeSessionId}`
+      actions.createDiv({
+        cls: "claude-session-chip",
+        text: `session ${this.currentThread.claudeCodeSessionId.slice(0, 8)}`
       });
 
-      const resetSessionButton = header.createEl("button", { text: "Reset Session" });
+      const resetSessionButton = actions.createEl("button", { text: "Reset Session" });
+      resetSessionButton.addClass("mod-warning");
       resetSessionButton.addEventListener("click", async () => {
         if (!this.currentThread) {
           return;
@@ -234,14 +216,20 @@ export class ClaudePanelView extends ItemView {
         this.currentThread = await this.orchestrator.resetClaudeSession(this.currentThread.id);
         this.render();
       });
+    } else {
+      actions.createDiv({
+        cls: "claude-session-chip",
+        text: "new session"
+      });
     }
   }
 
   private renderThreads(): void {
     const section = this.contentEl.createDiv({ cls: "claude-threads" });
-    section.createEl("span", { text: "Thread" });
+    section.createDiv({ cls: "claude-section-title", text: "Thread" });
 
-    const select = section.createEl("select");
+    const row = section.createDiv({ cls: "claude-thread-row" });
+    const select = row.createEl("select");
     for (const thread of this.threadIndex) {
       const option = select.createEl("option", {
         value: thread.id,
@@ -258,10 +246,17 @@ export class ClaudePanelView extends ItemView {
       this.streamingAssistant = "";
       this.render();
     });
+
+    const newButton = row.createEl("button", { text: "New" });
+    newButton.addClass("mod-cta");
+    newButton.addEventListener("click", async () => {
+      await this.createNewThread();
+    });
   }
 
   private renderTranscript(): void {
     const section = this.contentEl.createDiv({ cls: "claude-transcript" });
+    section.createDiv({ cls: "claude-section-title", text: "Conversation" });
 
     if (!this.currentThread || this.currentThread.messages.length === 0) {
       section.createEl("div", { text: "No messages yet.", cls: "claude-muted" });
@@ -269,21 +264,21 @@ export class ClaudePanelView extends ItemView {
     }
 
     for (const message of this.currentThread.messages) {
-      const item = section.createDiv({ cls: "claude-message" });
+      const item = section.createDiv({ cls: `claude-message claude-message-${message.role}` });
       item.createDiv({ cls: "claude-message-role", text: message.role });
-      item.createDiv({ text: message.content });
+      item.createEl("pre", { cls: "claude-message-content", text: message.content });
     }
 
     if (this.streamingAssistant) {
-      const item = section.createDiv({ cls: "claude-message" });
+      const item = section.createDiv({ cls: "claude-message claude-message-assistant claude-message-streaming" });
       item.createDiv({ cls: "claude-message-role", text: "assistant (streaming)" });
-      item.createDiv({ text: this.streamingAssistant });
+      item.createEl("pre", { cls: "claude-message-content", text: this.streamingAssistant });
     }
   }
 
   private renderAttachments(): void {
     const section = this.contentEl.createDiv({ cls: "claude-attachments" });
-    section.createDiv({ text: "Attachments" });
+    section.createDiv({ cls: "claude-section-title", text: "Attachments" });
 
     if (!this.currentThread || this.currentThread.attachments.length === 0) {
       section.createDiv({ text: "No attachments.", cls: "claude-muted" });
@@ -334,7 +329,7 @@ export class ClaudePanelView extends ItemView {
 
   private renderProposals(): void {
     const section = this.contentEl.createDiv({ cls: "claude-proposals" });
-    section.createDiv({ text: "Proposed changes" });
+    section.createDiv({ cls: "claude-section-title", text: "Proposed changes" });
 
     if (!this.currentThread || this.currentThread.proposedChanges.length === 0) {
       section.createDiv({ text: "No proposed changes.", cls: "claude-muted" });
@@ -436,7 +431,7 @@ export class ClaudePanelView extends ItemView {
 
   private renderToolLogs(): void {
     const section = this.contentEl.createDiv({ cls: "claude-tools" });
-    section.createDiv({ text: "Tool log" });
+    section.createDiv({ cls: "claude-section-title", text: "Tool log" });
 
     if (!this.currentThread || this.currentThread.toolLogs.length === 0) {
       section.createDiv({ text: "No tool calls yet.", cls: "claude-muted" });
@@ -461,10 +456,17 @@ export class ClaudePanelView extends ItemView {
 
   private renderComposer(): void {
     const section = this.contentEl.createDiv({ cls: "claude-composer" });
-    section.createDiv({ text: "Message" });
+    section.createDiv({ cls: "claude-section-title", text: "Message" });
 
     this.composerEl = section.createEl("textarea", {
       attr: { placeholder: "Ask Claude Panel to read/search/propose edits..." }
+    });
+    this.composerEl.addEventListener("keydown", async (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        const value = this.composerEl?.value ?? "";
+        await this.sendComposerMessage(value);
+      }
     });
 
     const actions = section.createDiv({ cls: "claude-actions" });

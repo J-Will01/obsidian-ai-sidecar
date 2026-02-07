@@ -30,7 +30,7 @@ export class ClaudePanelSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Claude executable")
-      .setDesc("Path or command name for Claude Code CLI.")
+      .setDesc("Path or command for Claude Code CLI (for macOS Homebrew, /opt/homebrew/bin/claude is common).")
       .addText((text) =>
         text
           .setPlaceholder("claude")

@@ -1,4 +1,6 @@
 import { spawn } from "child_process";
+import { accessSync, constants } from "fs";
+import { isAbsolute, join, resolve } from "path";
 import { ModelClient, ModelRequest, ModelStreamHooks } from "../ModelClient";
 import { ModelResult, ProposedChangeInput } from "../../state/types";
 
@@ -12,6 +14,47 @@ interface ClaudeCodeConfig {
 }
 
 type GetClaudeCodeConfig = () => ClaudeCodeConfig;
+
+function canExecute(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveExecutable(executable: string, cwd: string): { command: string | null; tried: string[] } {
+  const trimmed = executable.trim();
+  if (!trimmed) {
+    return { command: null, tried: [] };
+  }
+
+  if (trimmed.includes("/")) {
+    const candidate = isAbsolute(trimmed) ? trimmed : resolve(cwd, trimmed);
+    return canExecute(candidate)
+      ? { command: candidate, tried: [candidate] }
+      : { command: null, tried: [candidate] };
+  }
+
+  const pathEntries = (process.env.PATH || "")
+    .split(":")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const fallbackEntries = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
+  const directories = [...new Set([...pathEntries, ...fallbackEntries])];
+  const tried: string[] = [];
+
+  for (const dir of directories) {
+    const candidate = join(dir, trimmed);
+    tried.push(candidate);
+    if (canExecute(candidate)) {
+      return { command: candidate, tried };
+    }
+  }
+
+  return { command: null, tried };
+}
 
 function splitArgs(input: string): string[] {
   return input
@@ -172,6 +215,16 @@ export class ClaudeCodeClient implements ModelClient {
 
   async stream(request: ModelRequest, hooks?: ModelStreamHooks): Promise<ModelResult> {
     const config = this.getConfig();
+    const resolved = resolveExecutable(config.executable, config.cwd);
+    if (!resolved.command) {
+      throw new Error(
+        [
+          `Claude executable not found: ${config.executable}`,
+          resolved.tried.length ? `Tried:\n- ${resolved.tried.join("\n- ")}` : "No executable candidates were generated.",
+          "Set Settings -> Claude Panel -> Claude executable to an absolute path."
+        ].join("\n\n")
+      );
+    }
 
     const args: string[] = [
       "-p",
@@ -207,7 +260,7 @@ export class ClaudeCodeClient implements ModelClient {
     let sessionId: string | undefined;
 
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(config.executable, args, {
+      const child = spawn(resolved.command as string, args, {
         cwd: config.cwd,
         env: process.env
       });
@@ -262,7 +315,15 @@ export class ClaudeCodeClient implements ModelClient {
 
       child.on("error", (error) => {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          reject(new Error(`Claude executable not found: ${config.executable}`));
+          reject(
+            new Error(
+              [
+                `Claude executable not found: ${config.executable}`,
+                `Resolved command: ${resolved.command ?? "none"}`,
+                "Set Settings -> Claude Panel -> Claude executable to an absolute path."
+              ].join("\n")
+            )
+          );
           return;
         }
         reject(error);

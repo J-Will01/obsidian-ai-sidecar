@@ -111,7 +111,26 @@ export default class ClaudePanelPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     const loaded = await this.loadData();
-    this.settings = { ...DEFAULT_SETTINGS, ...loaded };
+    const merged = { ...DEFAULT_SETTINGS, ...loaded } as ClaudePanelSettings;
+    if (merged.defaultThreadModel !== "claude-code") {
+      merged.defaultThreadModel = "claude-code";
+    }
+    if (!merged.claudeCodeExecutable || typeof merged.claudeCodeExecutable !== "string") {
+      merged.claudeCodeExecutable = DEFAULT_SETTINGS.claudeCodeExecutable;
+    }
+    if (!merged.claudeCodeModel || typeof merged.claudeCodeModel !== "string") {
+      merged.claudeCodeModel = DEFAULT_SETTINGS.claudeCodeModel;
+    }
+    if (!Number.isFinite(merged.claudeCodeMaxTurns) || merged.claudeCodeMaxTurns <= 0) {
+      merged.claudeCodeMaxTurns = DEFAULT_SETTINGS.claudeCodeMaxTurns;
+    }
+    if (typeof merged.claudeCodeAppendSystemPrompt !== "string") {
+      merged.claudeCodeAppendSystemPrompt = DEFAULT_SETTINGS.claudeCodeAppendSystemPrompt;
+    }
+    if (typeof merged.claudeCodeExtraArgs !== "string") {
+      merged.claudeCodeExtraArgs = DEFAULT_SETTINGS.claudeCodeExtraArgs;
+    }
+    this.settings = merged;
   }
 
   async saveSettings(): Promise<void> {
