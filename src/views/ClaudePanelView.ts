@@ -219,6 +219,22 @@ export class ClaudePanelView extends ItemView {
     selectionButton.addEventListener("click", async () => {
       await this.sendSelectionFromCommand();
     });
+
+    if (this.currentThread?.claudeCodeSessionId) {
+      header.createDiv({
+        cls: "claude-muted",
+        text: `Session: ${this.currentThread.claudeCodeSessionId}`
+      });
+
+      const resetSessionButton = header.createEl("button", { text: "Reset Session" });
+      resetSessionButton.addEventListener("click", async () => {
+        if (!this.currentThread) {
+          return;
+        }
+        this.currentThread = await this.orchestrator.resetClaudeSession(this.currentThread.id);
+        this.render();
+      });
+    }
   }
 
   private renderThreads(): void {

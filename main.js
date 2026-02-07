@@ -257,6 +257,14 @@ var AgentOrchestrator = class {
       thread.settings.model = model;
     });
   }
+  async resetClaudeSession(threadId) {
+    return this.store.updateThread(threadId, (thread) => {
+      const previous = thread.claudeCodeSessionId;
+      thread.claudeCodeSessionId = void 0;
+      thread.claudeCodeSessionUpdatedAt = void 0;
+      this.logTool(thread, "claude_session_reset", { previous }, true, "Cleared stored Claude Code session");
+    });
+  }
   async attachCurrentNote(threadId) {
     const note = await this.editorTools.getActiveNote();
     if (!note) {
@@ -369,6 +377,14 @@ ${result2.snippet}`).join("\n\n"),
     if (!model) {
       throw new Error("No model clients registered.");
     }
+    const previousSessionId = working.claudeCodeSessionId;
+    this.logTool(
+      working,
+      "claude_session_use",
+      { sessionId: previousSessionId != null ? previousSessionId : null },
+      true,
+      previousSessionId ? "Resuming Claude Code session" : "Starting new Claude Code session"
+    );
     let result;
     try {
       result = await model.stream(
@@ -387,6 +403,17 @@ ${result2.snippet}`).join("\n\n"),
       this.logTool(working, "model_stream", { model: model.id }, false, void 0, message);
       await this.store.saveThread(working);
       return working;
+    }
+    if (result.claudeCodeSessionId && result.claudeCodeSessionId !== previousSessionId) {
+      working.claudeCodeSessionId = result.claudeCodeSessionId;
+      working.claudeCodeSessionUpdatedAt = makeTimestamp();
+      this.logTool(
+        working,
+        "claude_session",
+        { previous: previousSessionId, current: result.claudeCodeSessionId },
+        true,
+        previousSessionId ? "Resumed Claude Code session" : "Created Claude Code session"
+      );
     }
     const assistant = {
       id: makeEntityId("msg"),
@@ -783,12 +810,16 @@ var ClaudeCodeClient = class {
     if (config.appendSystemPrompt.trim()) {
       args.push("--append-system-prompt", config.appendSystemPrompt.trim());
     }
+    if (request.thread.claudeCodeSessionId) {
+      args.push("--resume", request.thread.claudeCodeSessionId);
+    }
     args.push(...splitArgs(config.extraArgs));
     const streamedAssistantChunks = [];
     const rawStdoutChunks = [];
     const rawStderrChunks = [];
     let finalResultText = "";
     let resultErrorText = "";
+    let sessionId;
     await new Promise((resolve, reject) => {
       const child = (0, import_child_process.spawn)(config.executable, args, {
         cwd: config.cwd,
@@ -809,6 +840,9 @@ var ClaudeCodeClient = class {
             try {
               const event = JSON.parse(line);
               const type = String((_a = event.type) != null ? _a : "");
+              if (typeof event.session_id === "string" && event.session_id.trim()) {
+                sessionId = event.session_id.trim();
+              }
               if (type === "assistant") {
                 const assistantText = extractTextFromAssistantPayload(event);
                 if (assistantText) {
@@ -855,9 +889,13 @@ var ClaudeCodeClient = class {
       throw new Error(resultErrorText);
     }
     if (candidate) {
-      return parseModelResult(candidate);
+      const parsed2 = parseModelResult(candidate);
+      parsed2.claudeCodeSessionId = sessionId;
+      return parsed2;
     }
-    return parseModelResult(rawStdoutChunks.join("\n").trim());
+    const parsed = parseModelResult(rawStdoutChunks.join("\n").trim());
+    parsed.claudeCodeSessionId = sessionId;
+    return parsed;
   }
 };
 
@@ -1189,13 +1227,14 @@ var ClaudePanelView = class extends import_obsidian7.ItemView {
     this.renderComposer();
   }
   renderHeader() {
+    var _a;
     const header = this.contentEl.createDiv({ cls: "claude-header" });
     const modeLabel = header.createEl("label", { text: "Mode" });
     const modeSelect = modeLabel.createEl("select");
     ["plan", "normal", "auto-apply"].forEach((mode) => {
-      var _a;
+      var _a2;
       const option = modeSelect.createEl("option", { value: mode, text: mode });
-      if (((_a = this.currentThread) == null ? void 0 : _a.settings.mode) === mode) {
+      if (((_a2 = this.currentThread) == null ? void 0 : _a2.settings.mode) === mode) {
         option.selected = true;
       }
     });
@@ -1209,9 +1248,9 @@ var ClaudePanelView = class extends import_obsidian7.ItemView {
     const modelLabel = header.createEl("label", { text: "Model" });
     const modelSelect = modelLabel.createEl("select");
     ["claude-code"].forEach((model) => {
-      var _a;
+      var _a2;
       const option = modelSelect.createEl("option", { value: model, text: model });
-      if (((_a = this.currentThread) == null ? void 0 : _a.settings.model) === model) {
+      if (((_a2 = this.currentThread) == null ? void 0 : _a2.settings.model) === model) {
         option.selected = true;
       }
     });
@@ -1235,6 +1274,20 @@ var ClaudePanelView = class extends import_obsidian7.ItemView {
     selectionButton.addEventListener("click", async () => {
       await this.sendSelectionFromCommand();
     });
+    if ((_a = this.currentThread) == null ? void 0 : _a.claudeCodeSessionId) {
+      header.createDiv({
+        cls: "claude-muted",
+        text: `Session: ${this.currentThread.claudeCodeSessionId}`
+      });
+      const resetSessionButton = header.createEl("button", { text: "Reset Session" });
+      resetSessionButton.addEventListener("click", async () => {
+        if (!this.currentThread) {
+          return;
+        }
+        this.currentThread = await this.orchestrator.resetClaudeSession(this.currentThread.id);
+        this.render();
+      });
+    }
   }
   renderThreads() {
     var _a;

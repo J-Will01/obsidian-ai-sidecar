@@ -71,6 +71,8 @@ export interface Thread {
   title: string;
   createdAt: string;
   updatedAt: string;
+  claudeCodeSessionId?: string;
+  claudeCodeSessionUpdatedAt?: string;
   messages: Message[];
   attachments: Attachment[];
   proposedChanges: ProposedChange[];
@@ -101,4 +103,5 @@ export interface ProposedChangeInput {
 export interface ModelResult {
   assistantText: string;
   proposals: ProposedChangeInput[];
+  claudeCodeSessionId?: string;
 }

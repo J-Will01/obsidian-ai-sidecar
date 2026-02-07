@@ -82,6 +82,15 @@ export class AgentOrchestrator {
     });
   }
 
+  async resetClaudeSession(threadId: string): Promise<Thread> {
+    return this.store.updateThread(threadId, (thread) => {
+      const previous = thread.claudeCodeSessionId;
+      thread.claudeCodeSessionId = undefined;
+      thread.claudeCodeSessionUpdatedAt = undefined;
+      this.logTool(thread, "claude_session_reset", { previous }, true, "Cleared stored Claude Code session");
+    });
+  }
+
   async attachCurrentNote(threadId: string): Promise<Thread> {
     const note = await this.editorTools.getActiveNote();
     if (!note) {
@@ -211,6 +220,14 @@ export class AgentOrchestrator {
     if (!model) {
       throw new Error("No model clients registered.");
     }
+    const previousSessionId = working.claudeCodeSessionId;
+    this.logTool(
+      working,
+      "claude_session_use",
+      { sessionId: previousSessionId ?? null },
+      true,
+      previousSessionId ? "Resuming Claude Code session" : "Starting new Claude Code session"
+    );
 
     let result: ModelResult;
     try {
@@ -230,6 +247,18 @@ export class AgentOrchestrator {
       this.logTool(working, "model_stream", { model: model.id }, false, undefined, message);
       await this.store.saveThread(working);
       return working;
+    }
+
+    if (result.claudeCodeSessionId && result.claudeCodeSessionId !== previousSessionId) {
+      working.claudeCodeSessionId = result.claudeCodeSessionId;
+      working.claudeCodeSessionUpdatedAt = makeTimestamp();
+      this.logTool(
+        working,
+        "claude_session",
+        { previous: previousSessionId, current: result.claudeCodeSessionId },
+        true,
+        previousSessionId ? "Resumed Claude Code session" : "Created Claude Code session"
+      );
     }
 
     const assistant: Message = {

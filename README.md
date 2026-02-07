@@ -54,6 +54,11 @@ This plugin currently targets the Claude Code runtime (CLI wrapper mode), not di
 3. Confirm `Claude executable` (usually `claude`).
 4. Optionally set `Claude model` and `Claude max turns`.
 
+Session behavior:
+- Each Claude Panel thread stores a Claude Code `session_id`.
+- New message in same thread uses `--resume <session_id>`.
+- Use `Reset Session` in panel header to force a fresh runtime session for that thread.
+
 ## Plugin Artifacts
 
 - `manifest.json`

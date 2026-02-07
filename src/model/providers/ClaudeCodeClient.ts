@@ -193,6 +193,10 @@ export class ClaudeCodeClient implements ModelClient {
       args.push("--append-system-prompt", config.appendSystemPrompt.trim());
     }
 
+    if (request.thread.claudeCodeSessionId) {
+      args.push("--resume", request.thread.claudeCodeSessionId);
+    }
+
     args.push(...splitArgs(config.extraArgs));
 
     const streamedAssistantChunks: string[] = [];
@@ -200,6 +204,7 @@ export class ClaudeCodeClient implements ModelClient {
     const rawStderrChunks: string[] = [];
     let finalResultText = "";
     let resultErrorText = "";
+    let sessionId: string | undefined;
 
     await new Promise<void>((resolve, reject) => {
       const child = spawn(config.executable, args, {
@@ -225,6 +230,9 @@ export class ClaudeCodeClient implements ModelClient {
             try {
               const event = JSON.parse(line) as Record<string, unknown>;
               const type = String(event.type ?? "");
+              if (typeof event.session_id === "string" && event.session_id.trim()) {
+                sessionId = event.session_id.trim();
+              }
               if (type === "assistant") {
                 const assistantText = extractTextFromAssistantPayload(event);
                 if (assistantText) {
@@ -280,9 +288,13 @@ export class ClaudeCodeClient implements ModelClient {
     }
 
     if (candidate) {
-      return parseModelResult(candidate);
+      const parsed = parseModelResult(candidate);
+      parsed.claudeCodeSessionId = sessionId;
+      return parsed;
     }
 
-    return parseModelResult(rawStdoutChunks.join("\n").trim());
+    const parsed = parseModelResult(rawStdoutChunks.join("\n").trim());
+    parsed.claudeCodeSessionId = sessionId;
+    return parsed;
   }
 }
