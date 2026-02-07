@@ -69,12 +69,37 @@
 .claude-diff {
   font-family: var(--font-monospace);
   font-size: 12px;
-  white-space: pre-wrap;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
   padding: 6px;
   max-height: 160px;
   overflow-y: auto;
+  background: var(--background-primary);
+}
+
+.claude-diff-line {
+  white-space: pre-wrap;
+}
+
+.claude-diff-line-add {
+  color: var(--text-success);
+  background: rgba(46, 160, 67, 0.14);
+}
+
+.claude-diff-line-remove {
+  color: var(--text-error);
+  background: rgba(248, 81, 73, 0.14);
+}
+
+.claude-diff-line-context {
+  color: var(--text-muted);
+}
+
+.claude-confirm-modal ul {
+  margin-top: 8px;
+  margin-bottom: 10px;
+  max-height: 220px;
+  overflow: auto;
 }
 
 .claude-composer {

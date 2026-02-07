@@ -1,8 +1,58 @@
-import { ItemView, Notice, WorkspaceLeaf } from "obsidian";
+import { ItemView, Modal, Notice, WorkspaceLeaf } from "obsidian";
 import { AgentOrchestrator } from "../agent/AgentOrchestrator";
 import { ThreadIndexEntry, Thread } from "../state/types";
 
 export const CLAUDE_PANEL_VIEW_TYPE = "claude-panel-view";
+
+class BatchApplyModal extends Modal {
+  private paths: string[];
+  private onDecision: (approved: boolean) => void;
+  private decided = false;
+
+  constructor(leaf: WorkspaceLeaf, paths: string[], onDecision: (approved: boolean) => void) {
+    super(leaf.app);
+    this.paths = [...new Set(paths)];
+    this.onDecision = onDecision;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("claude-confirm-modal");
+
+    contentEl.createEl("h3", { text: "Confirm file writes" });
+    contentEl.createDiv({
+      text: `Apply ${this.paths.length} proposed change(s) to the following path(s):`
+    });
+
+    const list = contentEl.createEl("ul");
+    for (const path of this.paths) {
+      list.createEl("li", { text: path });
+    }
+
+    const actions = contentEl.createDiv({ cls: "claude-actions" });
+    const cancel = actions.createEl("button", { text: "Cancel" });
+    cancel.addEventListener("click", () => {
+      this.decided = true;
+      this.onDecision(false);
+      this.close();
+    });
+
+    const apply = actions.createEl("button", { text: "Apply" });
+    apply.addClass("mod-cta");
+    apply.addEventListener("click", () => {
+      this.decided = true;
+      this.onDecision(true);
+      this.close();
+    });
+  }
+
+  onClose(): void {
+    if (!this.decided) {
+      this.onDecision(false);
+    }
+  }
+}
 
 export class ClaudePanelView extends ItemView {
   private orchestrator: AgentOrchestrator;
@@ -280,6 +330,20 @@ export class ClaudePanelView extends ItemView {
       if (!this.currentThread) {
         return;
       }
+
+      const pending = this.currentThread.proposedChanges.filter((change) => change.status === "proposed");
+      if (pending.length === 0) {
+        new Notice("No pending proposals to apply.");
+        return;
+      }
+
+      if (this.currentThread.settings.mode === "normal") {
+        const approved = await this.confirmBatchApply(pending.map((change) => change.path));
+        if (!approved) {
+          return;
+        }
+      }
+
       this.currentThread = await this.orchestrator.applyAll(this.currentThread.id);
       this.render();
     });
@@ -305,10 +369,17 @@ export class ClaudePanelView extends ItemView {
       }
 
       if (proposal.diff) {
-        item.createEl("pre", {
-          cls: "claude-diff",
-          text: proposal.diff
-        });
+        const diffEl = item.createDiv({ cls: "claude-diff" });
+        for (const line of proposal.diff.split("\n")) {
+          const lineEl = diffEl.createDiv({ cls: "claude-diff-line", text: line || " " });
+          if (line.startsWith("+")) {
+            lineEl.addClass("claude-diff-line-add");
+          } else if (line.startsWith("-")) {
+            lineEl.addClass("claude-diff-line-remove");
+          } else {
+            lineEl.addClass("claude-diff-line-context");
+          }
+        }
       }
 
       if (proposal.error) {
@@ -322,6 +393,14 @@ export class ClaudePanelView extends ItemView {
           if (!this.currentThread) {
             return;
           }
+
+          if (this.currentThread.settings.mode === "normal") {
+            const approved = await this.confirmBatchApply([proposal.path]);
+            if (!approved) {
+              return;
+            }
+          }
+
           this.currentThread = await this.orchestrator.applyChange(this.currentThread.id, proposal.id);
           this.render();
         });
@@ -412,5 +491,12 @@ export class ClaudePanelView extends ItemView {
     }
 
     this.render();
+  }
+
+  private async confirmBatchApply(paths: string[]): Promise<boolean> {
+    return new Promise((resolve) => {
+      const modal = new BatchApplyModal(this.leaf, paths, resolve);
+      modal.open();
+    });
   }
 }

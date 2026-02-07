@@ -28,6 +28,7 @@ export class AgentOrchestrator {
   private modelClients: Map<string, ModelClient>;
   private applyEngine: ApplyEngine;
   private permissionManager: PermissionManager;
+  private defaultModel: () => string;
 
   constructor(args: {
     store: ThreadStore;
@@ -36,6 +37,7 @@ export class AgentOrchestrator {
     models: ModelClient[];
     applyEngine: ApplyEngine;
     permissionManager: PermissionManager;
+    defaultModel?: () => string;
   }) {
     this.store = args.store;
     this.vaultTools = args.vaultTools;
@@ -43,6 +45,7 @@ export class AgentOrchestrator {
     this.modelClients = new Map(args.models.map((model) => [model.id, model]));
     this.applyEngine = args.applyEngine;
     this.permissionManager = args.permissionManager;
+    this.defaultModel = args.defaultModel ?? (() => "mock");
   }
 
   async listThreads() {
@@ -50,7 +53,7 @@ export class AgentOrchestrator {
   }
 
   async createThread(title?: string): Promise<Thread> {
-    return this.store.createThread(title);
+    return this.store.createThread(title, { model: this.defaultModel() });
   }
 
   async loadThread(threadId: string): Promise<Thread | null> {
@@ -162,7 +165,7 @@ export class AgentOrchestrator {
   async sendMessage(threadId: string, userMessage: string, options?: SendMessageOptions): Promise<Thread> {
     let working =
       (await this.store.getThread(threadId)) ||
-      (await this.store.createThread(userMessage.slice(0, 40) || "New thread"));
+      (await this.createThread(userMessage.slice(0, 40) || "New thread"));
 
     const user: Message = {
       id: makeEntityId("msg"),

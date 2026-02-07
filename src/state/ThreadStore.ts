@@ -1,5 +1,5 @@
 import { App, normalizePath } from "obsidian";
-import { Thread, ThreadIndex, ThreadIndexEntry } from "./types";
+import { Thread, ThreadIndex, ThreadIndexEntry, ThreadSettings } from "./types";
 
 const ROOT_DIR = ".claude-panel";
 const THREADS_DIR = normalizePath(`${ROOT_DIR}/threads`);
@@ -13,7 +13,7 @@ function makeId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function defaultThread(title?: string): Thread {
+function defaultThread(title?: string, settings?: Partial<ThreadSettings>): Thread {
   const stamp = nowIso();
   return {
     id: makeId("thread"),
@@ -26,7 +26,7 @@ function defaultThread(title?: string): Thread {
     toolLogs: [],
     settings: {
       mode: "normal",
-      model: "mock"
+      model: settings?.model ?? "mock"
     }
   };
 }
@@ -53,8 +53,8 @@ export class ThreadStore {
     return [...index.threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  async createThread(title?: string): Promise<Thread> {
-    const thread = defaultThread(title);
+  async createThread(title?: string, settings?: Partial<ThreadSettings>): Promise<Thread> {
+    const thread = defaultThread(title, settings);
     await this.saveThread(thread);
     return thread;
   }

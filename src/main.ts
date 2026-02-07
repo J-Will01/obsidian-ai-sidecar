@@ -4,6 +4,8 @@ import { PermissionManager } from "./agent/PermissionManager";
 import { ApplyEngine } from "./diff/ApplyEngine";
 import { AnthropicClient } from "./model/providers/AnthropicClient";
 import { MockModelClient } from "./model/providers/MockModelClient";
+import { ClaudePanelSettingTab } from "./settings/ClaudePanelSettingTab";
+import { ClaudePanelSettings, DEFAULT_SETTINGS } from "./settings/PluginSettings";
 import { ThreadStore } from "./state/ThreadStore";
 import { EditorTools } from "./tools/EditorTools";
 import { VaultTools } from "./tools/VaultTools";
@@ -12,8 +14,11 @@ import { CLAUDE_PANEL_VIEW_TYPE, ClaudePanelView } from "./views/ClaudePanelView
 export default class ClaudePanelPlugin extends Plugin {
   private store!: ThreadStore;
   private orchestrator!: AgentOrchestrator;
+  settings: ClaudePanelSettings = DEFAULT_SETTINGS;
 
   async onload(): Promise<void> {
+    await this.loadSettings();
+
     this.store = new ThreadStore(this.app);
     await this.store.init();
 
@@ -26,10 +31,21 @@ export default class ClaudePanelPlugin extends Plugin {
       store: this.store,
       vaultTools,
       editorTools,
-      models: [new MockModelClient(), new AnthropicClient()],
+      models: [
+        new MockModelClient(),
+        new AnthropicClient(() => ({
+          apiKey: this.settings.anthropicApiKey,
+          model: this.settings.anthropicModel,
+          maxTokens: this.settings.anthropicMaxTokens,
+          temperature: this.settings.anthropicTemperature
+        }))
+      ],
       applyEngine,
-      permissionManager
+      permissionManager,
+      defaultModel: () => this.settings.defaultThreadModel
     });
+
+    this.addSettingTab(new ClaudePanelSettingTab(this.app, this));
 
     this.registerView(
       CLAUDE_PANEL_VIEW_TYPE,
@@ -89,6 +105,15 @@ export default class ClaudePanelPlugin extends Plugin {
         await promise;
         await leaf.setViewState({ type: "empty" });
       }, Promise.resolve());
+  }
+
+  async loadSettings(): Promise<void> {
+    const loaded = await this.loadData();
+    this.settings = { ...DEFAULT_SETTINGS, ...loaded };
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
   }
 
   private async activateView(): Promise<ClaudePanelView> {
