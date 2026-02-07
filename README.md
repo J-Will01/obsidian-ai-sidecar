@@ -23,6 +23,21 @@ npm run build
 ./scripts/install-local.sh "/absolute/path/to/your-vault"
 ```
 
+## Setup Test Vault (Repo-local `tmp/`)
+
+```bash
+./scripts/setup-test-vault.sh
+```
+
+This creates and refreshes:
+- `tmp/obsidian-ai-sidecar-test-vault`
+
+You can also provide a custom path:
+
+```bash
+./scripts/setup-test-vault.sh "tmp/my-custom-test-vault"
+```
+
 Then open Obsidian:
 1. `Settings -> Community plugins`
 2. Reload plugins
